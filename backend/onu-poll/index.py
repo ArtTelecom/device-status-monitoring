@@ -5,6 +5,8 @@
 import os
 import json
 import puresnmp
+import logging
+logger = logging.getLogger()
 
 HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -25,9 +27,9 @@ OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
 
 def get_snmp_host():
-    """Хост берём из OLT_HOST (убираем порт), SNMP всегда на 161."""
+    """Хост берём из OLT_HOST (убираем порт веб-интерфейса), SNMP порт отдельно."""
     host_full = os.environ.get('OLT_HOST', '')
-    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '161'))
+    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '5468'))
     if ':' in host_full:
         host = host_full.rsplit(':', 1)[0]
     else:
@@ -36,22 +38,13 @@ def get_snmp_host():
 
 
 def snmp_walk(community, host, port, oid):
-    """Обход SNMP таблицы через puresnmp, возвращает dict {last_index: value} + лог ошибок."""
+    """Обход SNMP таблицы через puresnmp v2 Client API."""
     result = {}
     error = None
     try:
-        # Определяем доступный метод динамически
-        available = [m for m in dir(puresnmp) if not m.startswith('_')]
-        walk_fn = None
-        for name in ('walk', 'bulkwalk', 'walkall', 'getnext'):
-            if name in available:
-                walk_fn = getattr(puresnmp, name)
-                break
-        if walk_fn is None:
-            error = f'No walk method found. Available: {available}'
-            return result, error
-
-        rows = walk_fn(host, community, oid, port=port, timeout=8)
+        credentials = puresnmp.V2C(community)
+        client = puresnmp.Client(host, credentials, port=port, timeout=8)
+        rows = client.walk(oid)
         for varbind in rows:
             oid_str = str(varbind.oid)
             idx = oid_str.split('.')[-1]
@@ -89,6 +82,7 @@ def handler(event: dict, context) -> dict:
             'body': json.dumps({'error': 'OLT_HOST не настроен', 'onu_list': []})
         }
 
+    logger.warning(f"SNMP poll: host={host} port={port} community={community}")
     errors = {}
     try:
         states, err = snmp_walk(community, host, port, OID_CDATA_ONU_STATE)
