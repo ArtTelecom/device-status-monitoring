@@ -16,12 +16,11 @@ HEADERS = {
     'Content-Type': 'application/json',
 }
 
-# CData GPON ONU OIDs
-OID_CDATA_ONU_STATE = '1.3.6.1.4.1.34592.1.3.5.1.1.5'
-OID_CDATA_ONU_MAC   = '1.3.6.1.4.1.34592.1.3.5.1.1.3'
-OID_CDATA_ONU_SN    = '1.3.6.1.4.1.34592.1.3.5.1.1.2'
-OID_CDATA_ONU_RX    = '1.3.6.1.4.1.34592.1.3.5.1.1.8'
-OID_CDATA_ONU_TX    = '1.3.6.1.4.1.34592.1.3.5.1.1.9'
+# CData GEPON ONU OIDs (таблица 1.3.6.1.4.1.34592.1.3.4.1.1, индекс: .col.1.port.onu)
+OID_EPON_BASE   = '1.3.6.1.4.1.34592.1.3.4.1.1'
+OID_EPON_MAC    = '1.3.6.1.4.1.34592.1.3.4.1.1.7'   # MAC адрес ONU
+OID_EPON_STATUS = '1.3.6.1.4.1.34592.1.3.4.1.1.9'   # Статус: есть=online, нет=offline
+OID_EPON_RX     = '1.3.6.1.4.1.34592.1.3.4.1.1.2'   # Uptime/RX
 OID_IF_OPER_STATUS  = '1.3.6.1.2.1.2.2.1.8'
 OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
@@ -179,7 +178,7 @@ def parse_response(data):
         return None, None
 
 
-def snmp_walk(community, host, port, base_oid, timeout=3, max_rows=512):
+def snmp_walk(community, host, port, base_oid, timeout=3, max_rows=512, full_suffix=False):
     """SNMP walk через чистый UDP сокет."""
     result = {}
     current_oid = base_oid
@@ -204,7 +203,7 @@ def snmp_walk(community, host, port, base_oid, timeout=3, max_rows=512):
                 break
 
             suffix = oid_val[len(base_oid) + 1:]
-            idx = suffix.split('.')[-1]
+            idx = suffix if full_suffix else suffix.split('.')[-1]
             result[idx] = value
             current_oid = oid_val
             req_id += 1
@@ -244,103 +243,56 @@ def handler(event: dict, context) -> dict:
         base = '1.3.6.1.4.1.34592.1.3.4.1.1'
         for col in range(1, 12):
             oid = f'{base}.{col}'
-            rows = snmp_walk(community, host, port, oid, timeout=5, max_rows=10)
+            rows = snmp_walk(community, host, port, oid, timeout=5, max_rows=10, full_suffix=True)
             result[f'col{col}'] = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in list(rows.items())[:5]}
         return {'statusCode': 200, 'headers': HEADERS, 'body': json.dumps(result)}
 
-    errors = {}
     try:
-        states = snmp_walk(community, host, port, OID_CDATA_ONU_STATE)
-        logger.warning(f"states: {len(states)} rows")
+        # Индекс: 1.PORT.ONU_NUM (PORT=1-4, ONU_NUM=1-64)
+        online_keys = snmp_walk(community, host, port, OID_EPON_STATUS, timeout=5, max_rows=512, full_suffix=True)
+        macs        = snmp_walk(community, host, port, OID_EPON_MAC,    timeout=5, max_rows=512, full_suffix=True)
+        logger.warning(f"EPON online keys: {list(online_keys.keys())[:10]}, macs: {list(macs.keys())[:5]}")
 
-        macs = snmp_walk(community, host, port, OID_CDATA_ONU_MAC)
-        rxs  = snmp_walk(community, host, port, OID_CDATA_ONU_RX)
-        txs  = snmp_walk(community, host, port, OID_CDATA_ONU_TX)
-        sns  = snmp_walk(community, host, port, OID_CDATA_ONU_SN)
+        # Объединяем все найденные ключи
+        all_keys = set(online_keys.keys()) | set(macs.keys())
+        # Фильтруем только ключи вида 1.PORT.ONU (3 части)
+        valid_keys = [k for k in all_keys if len(k.split('.')) == 3 and k.startswith('1.')]
 
         onu_list = []
-
-        if states:
-            for idx, state_val in states.items():
-                try:
-                    state_int = int(state_val)
-                except Exception:
-                    state_int = 0
-
-                if state_int == 1:
-                    status = 'online'
-                elif state_int == 2:
-                    status = 'offline'
-                else:
-                    status = 'unknown'
-
-                try:
-                    rx_int = int(rxs.get(idx, 0))
-                    rx = round(rx_int / 1000.0, 2) if rx_int != 0 else None
-                except Exception:
-                    rx = None
-
-                try:
-                    tx_int = int(txs.get(idx, 0))
-                    tx = round(tx_int / 1000.0, 2) if tx_int != 0 else None
-                except Exception:
-                    tx = None
-
-                if status == 'online' and rx is not None and rx < -28:
-                    status = 'warning'
-
-                mac_raw = macs.get(idx)
-                mac = format_mac(mac_raw) if mac_raw else ''
-                sn  = str(sns.get(idx, ''))
-
-                onu_list.append({
-                    'id':     f'ONU-{str(idx).zfill(3)}',
-                    'index':  idx,
-                    'mac':    mac,
-                    'sn':     sn,
-                    'status': status,
-                    'signal': rx,
-                    'tx':     tx,
-                    'olt':    'OLT-01',
-                    'port':   f'1/1/{idx}',
-                    'ip':     '',
-                    'uptime': '',
-                    'model':  'CData OLT',
-                })
-        else:
-            errors['cdata'] = 'CData OID пустой, пробуем ifOperStatus'
-            if_status = snmp_walk(community, host, port, OID_IF_OPER_STATUS)
-            if_descr  = snmp_walk(community, host, port, OID_IF_DESCR)
-            logger.warning(f"fallback ifOperStatus: {len(if_status)} rows")
-            for idx, val in if_status.items():
-                descr = str(if_descr.get(idx, ''))
-                if 'onu' not in descr.lower() and 'gpon' not in descr.lower() and 'epon' not in descr.lower():
-                    continue
-                st = 'online' if int(val) == 1 else 'offline'
-                onu_list.append({
-                    'id':     f'ONU-{str(idx).zfill(3)}',
-                    'index':  idx,
-                    'mac':    '', 'sn': '',
-                    'status': st,
-                    'signal': None, 'tx': None,
-                    'olt':    'OLT-01',
-                    'port':   descr,
-                    'ip':     '', 'uptime': '',
-                    'model':  'CData OLT',
-                })
+        for key in sorted(valid_keys, key=lambda x: [int(i) for i in x.split('.')]):
+            parts = key.split('.')
+            port_num = parts[1]
+            onu_num  = parts[2]
+            is_online = key in online_keys
+            mac_raw = macs.get(key)
+            mac = format_mac(mac_raw) if mac_raw else ''
+            status = 'online' if is_online else 'offline'
+            onu_list.append({
+                'id':     f'P{port_num}-ONU{onu_num.zfill(2)}',
+                'index':  key,
+                'mac':    mac,
+                'sn':     '',
+                'status': status,
+                'signal': None,
+                'tx':     None,
+                'olt':    'OLT-01',
+                'port':   f'EPON0/{port_num}',
+                'ip':     '',
+                'uptime': '',
+                'model':  'CData GEPON',
+            })
 
         return {
             'statusCode': 200,
             'headers': HEADERS,
             'body': json.dumps({
-                'onu_list':  onu_list,
-                'total':     len(onu_list),
-                'online':    sum(1 for o in onu_list if o['status'] == 'online'),
-                'offline':   sum(1 for o in onu_list if o['status'] == 'offline'),
-                'warning':   sum(1 for o in onu_list if o['status'] == 'warning'),
-                'host':      host,
+                'onu_list': onu_list,
+                'total':    len(onu_list),
+                'online':   sum(1 for o in onu_list if o['status'] == 'online'),
+                'offline':  sum(1 for o in onu_list if o['status'] == 'offline'),
+                'warning':  0,
+                'host':     host,
                 'snmp_port': port,
-                'errors':    errors,
             })
         }
 

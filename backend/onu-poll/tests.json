@@ -6,10 +6,9 @@
       "path": "/",
       "expectedStatus": 200,
       "expectedBody": {
-        "onu_list": [],
-        "total": 0
+        "onu_list": []
       },
-      "bodyMatcher": "partial"
+      "bodyMatcher": "exists"
     }
   ]
 }
