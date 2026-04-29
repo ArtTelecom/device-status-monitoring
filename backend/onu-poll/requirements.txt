@@ -1,1 +1,1 @@
-puresnmp>=2.0.0
+# no external dependencies - pure stdlib
