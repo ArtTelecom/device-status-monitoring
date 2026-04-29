@@ -25,25 +25,40 @@ OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
 
 def get_snmp_host():
+    """Хост берём из OLT_HOST (убираем порт), SNMP всегда на 161."""
     host_full = os.environ.get('OLT_HOST', '')
+    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '161'))
     if ':' in host_full:
-        parts = host_full.rsplit(':', 1)
-        return parts[0], int(parts[1])
-    return host_full, 161
+        host = host_full.rsplit(':', 1)[0]
+    else:
+        host = host_full
+    return host, snmp_port
 
 
 def snmp_walk(community, host, port, oid):
-    """Обход SNMP таблицы через puresnmp, возвращает dict {last_index: value}"""
+    """Обход SNMP таблицы через puresnmp, возвращает dict {last_index: value} + лог ошибок."""
     result = {}
+    error = None
     try:
-        rows = puresnmp.bulkwalk(host, community, oid, port=port, timeout=5)
+        # Определяем доступный метод динамически
+        available = [m for m in dir(puresnmp) if not m.startswith('_')]
+        walk_fn = None
+        for name in ('walk', 'bulkwalk', 'walkall', 'getnext'):
+            if name in available:
+                walk_fn = getattr(puresnmp, name)
+                break
+        if walk_fn is None:
+            error = f'No walk method found. Available: {available}'
+            return result, error
+
+        rows = walk_fn(host, community, oid, port=port, timeout=8)
         for varbind in rows:
             oid_str = str(varbind.oid)
             idx = oid_str.split('.')[-1]
             result[idx] = varbind.value
-    except Exception:
-        pass
-    return result
+    except Exception as e:
+        error = str(e)
+    return result, error
 
 
 def format_mac(raw):
@@ -74,12 +89,15 @@ def handler(event: dict, context) -> dict:
             'body': json.dumps({'error': 'OLT_HOST не настроен', 'onu_list': []})
         }
 
+    errors = {}
     try:
-        states = snmp_walk(community, host, port, OID_CDATA_ONU_STATE)
-        macs   = snmp_walk(community, host, port, OID_CDATA_ONU_MAC)
-        rxs    = snmp_walk(community, host, port, OID_CDATA_ONU_RX)
-        txs    = snmp_walk(community, host, port, OID_CDATA_ONU_TX)
-        sns    = snmp_walk(community, host, port, OID_CDATA_ONU_SN)
+        states, err = snmp_walk(community, host, port, OID_CDATA_ONU_STATE)
+        if err:
+            errors['states'] = err
+        macs,   _ = snmp_walk(community, host, port, OID_CDATA_ONU_MAC)
+        rxs,    _ = snmp_walk(community, host, port, OID_CDATA_ONU_RX)
+        txs,    _ = snmp_walk(community, host, port, OID_CDATA_ONU_TX)
+        sns,    _ = snmp_walk(community, host, port, OID_CDATA_ONU_SN)
 
         onu_list = []
 
@@ -132,19 +150,19 @@ def handler(event: dict, context) -> dict:
                 })
         else:
             # Fallback: стандартный ifOperStatus
-            if_status = snmp_walk(community, host, port, OID_IF_OPER_STATUS)
-            if_descr  = snmp_walk(community, host, port, OID_IF_DESCR)
+            if_status, _ = snmp_walk(community, host, port, OID_IF_OPER_STATUS)
+            if_descr, _  = snmp_walk(community, host, port, OID_IF_DESCR)
             for idx, val in if_status.items():
                 descr = str(if_descr.get(idx, ''))
                 if 'onu' not in descr.lower() and 'gpon' not in descr.lower() and 'epon' not in descr.lower():
                     continue
-                status = 'online' if int(val) == 1 else 'offline'
+                st = 'online' if int(val) == 1 else 'offline'
                 onu_list.append({
                     'id':     f'ONU-{idx.zfill(3)}',
                     'index':  idx,
                     'mac':    '',
                     'sn':     '',
-                    'status': status,
+                    'status': st,
                     'signal': None,
                     'tx':     None,
                     'olt':    'OLT-01',
@@ -158,13 +176,14 @@ def handler(event: dict, context) -> dict:
             'statusCode': 200,
             'headers': HEADERS,
             'body': json.dumps({
-                'onu_list': onu_list,
-                'total':   len(onu_list),
-                'online':  sum(1 for o in onu_list if o['status'] == 'online'),
-                'offline': sum(1 for o in onu_list if o['status'] == 'offline'),
-                'warning': sum(1 for o in onu_list if o['status'] == 'warning'),
-                'host':    host,
+                'onu_list':  onu_list,
+                'total':     len(onu_list),
+                'online':    sum(1 for o in onu_list if o['status'] == 'online'),
+                'offline':   sum(1 for o in onu_list if o['status'] == 'offline'),
+                'warning':   sum(1 for o in onu_list if o['status'] == 'warning'),
+                'host':      host,
                 'snmp_port': port,
+                'errors':    errors,
             })
         }
 
@@ -172,5 +191,5 @@ def handler(event: dict, context) -> dict:
         return {
             'statusCode': 500,
             'headers': HEADERS,
-            'body': json.dumps({'error': str(e), 'onu_list': [], 'host': host})
+            'body': json.dumps({'error': str(e), 'onu_list': [], 'host': host, 'snmp_port': port})
         }
