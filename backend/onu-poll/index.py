@@ -6,6 +6,7 @@ import json
 import socket
 import struct
 import logging
+import threading
 
 logger = logging.getLogger()
 
@@ -252,11 +253,23 @@ def handler(event: dict, context) -> dict:
         return {'statusCode': 200, 'headers': HEADERS, 'body': json.dumps(result)}
 
     try:
-        # Индекс: 1.PORT.ONU_NUM (PORT=1-4, ONU_NUM=1-64)
-        online_keys = snmp_walk(community, host, port, OID_EPON_STATUS, timeout=2, max_rows=512, full_suffix=True)
-        macs        = snmp_walk(community, host, port, OID_EPON_MAC,    timeout=2, max_rows=512, full_suffix=True)
-        # Сигнал: индекс = onu_num*256 + port_num (плоский)
-        signals_raw = snmp_walk(community, host, port, OID_EPON_SIGNAL, timeout=2, max_rows=512, full_suffix=False)
+        results = {}
+
+        def walk_thread(key, oid, fs):
+            results[key] = snmp_walk(community, host, port, oid, timeout=8, max_rows=1024, full_suffix=fs)
+
+        threads = [
+            threading.Thread(target=walk_thread, args=('status', OID_EPON_STATUS, True)),
+            threading.Thread(target=walk_thread, args=('macs',   OID_EPON_MAC,    True)),
+            threading.Thread(target=walk_thread, args=('signal', OID_EPON_SIGNAL,  False)),
+        ]
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=20)
+
+        online_keys = results.get('status', {})
+        macs        = results.get('macs', {})
+        signals_raw = results.get('signal', {})
+
         # Преобразуем в словарь port.onu -> signal
         signals = {}
         for idx_str, val in signals_raw.items():
@@ -264,7 +277,8 @@ def handler(event: dict, context) -> dict:
                 idx = int(idx_str)
                 port_n = idx & 0xFF
                 onu_n  = idx >> 8
-                signals[f'1.{port_n}.{onu_n}'] = -int(val) if val else None
+                if port_n > 0 and onu_n > 0:
+                    signals[f'1.{port_n}.{onu_n}'] = -int(val) if val else None
             except Exception:
                 pass
         logger.warning(f"EPON online: {len(online_keys)}, macs: {len(macs)}, signals: {len(signals)}")
