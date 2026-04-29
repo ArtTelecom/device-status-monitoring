@@ -254,28 +254,15 @@ def handler(event: dict, context) -> dict:
 
     try:
         results = {}
-        lock = threading.Lock()
 
-        def walk_port(p):
-            # MAC и статус по каждому порту отдельно
-            st = snmp_walk(community, host, port, f'{OID_EPON_STATUS}.1.{p}', timeout=8, max_rows=128, full_suffix=True)
-            mc = snmp_walk(community, host, port, f'{OID_EPON_MAC}.1.{p}',    timeout=8, max_rows=128, full_suffix=True)
-            with lock:
-                for k, v in st.items():
-                    # суффикс теперь просто номер ONU
-                    onu_n = k.split('.')[-1]
-                    results.setdefault('status', {})[f'1.{p}.{onu_n}'] = v
-                for k, v in mc.items():
-                    onu_n = k.split('.')[-1]
-                    results.setdefault('macs', {})[f'1.{p}.{onu_n}'] = v
+        def walk_thread(key, oid, fs):
+            results[key] = snmp_walk(community, host, port, oid, timeout=8, max_rows=1024, full_suffix=fs)
 
-        def walk_signals():
-            sr = snmp_walk(community, host, port, OID_EPON_SIGNAL, timeout=8, max_rows=1024, full_suffix=False)
-            with lock:
-                results['signal'] = sr
-
-        threads = [threading.Thread(target=walk_port, args=(p,)) for p in range(1, 5)]
-        threads.append(threading.Thread(target=walk_signals))
+        threads = [
+            threading.Thread(target=walk_thread, args=('status', OID_EPON_STATUS, True)),
+            threading.Thread(target=walk_thread, args=('macs',   OID_EPON_MAC,    True)),
+            threading.Thread(target=walk_thread, args=('signal', OID_EPON_SIGNAL,  False)),
+        ]
         for t in threads: t.start()
         for t in threads: t.join(timeout=20)
 
