@@ -677,8 +677,8 @@ export default function Index() {
       const data: PollResult = await res.json();
       setLiveData(data);
       setLastUpdated(new Date());
-    } catch {
-      // keep previous data on error
+    } catch (e) {
+      console.error('Fetch error:', e);
     } finally {
       setLoading(false);
     }
@@ -690,10 +690,7 @@ export default function Index() {
     return () => clearInterval(interval);
   }, [fetchOnu]);
 
-  // Use live data if available, fall back to static demo
-  const activeOnu: OnuDevice[] = liveData?.onu_list?.length
-    ? liveData.onu_list
-    : ONU_DATA.map(d => ({ ...d, index: d.id.replace('ONU-', ''), sn: '', tx: null }));
+  const activeOnu: OnuDevice[] = liveData?.onu_list ?? [];
 
   const sectionTitles: Record<Section, string> = {
     dashboard: "Главная",
