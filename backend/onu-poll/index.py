@@ -253,10 +253,10 @@ def handler(event: dict, context) -> dict:
 
     try:
         # Индекс: 1.PORT.ONU_NUM (PORT=1-4, ONU_NUM=1-64)
-        online_keys = snmp_walk(community, host, port, OID_EPON_STATUS, timeout=5, max_rows=512, full_suffix=True)
-        macs        = snmp_walk(community, host, port, OID_EPON_MAC,    timeout=5, max_rows=512, full_suffix=True)
+        online_keys = snmp_walk(community, host, port, OID_EPON_STATUS, timeout=2, max_rows=512, full_suffix=True)
+        macs        = snmp_walk(community, host, port, OID_EPON_MAC,    timeout=2, max_rows=512, full_suffix=True)
         # Сигнал: индекс = onu_num*256 + port_num (плоский)
-        signals_raw = snmp_walk(community, host, port, OID_EPON_SIGNAL, timeout=5, max_rows=512, full_suffix=False)
+        signals_raw = snmp_walk(community, host, port, OID_EPON_SIGNAL, timeout=2, max_rows=512, full_suffix=False)
         # Преобразуем в словарь port.onu -> signal
         signals = {}
         for idx_str, val in signals_raw.items():

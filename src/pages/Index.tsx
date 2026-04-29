@@ -673,7 +673,7 @@ export default function Index() {
   const fetchOnu = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(ONU_POLL_URL);
+      const res = await fetch(ONU_POLL_URL, { signal: AbortSignal.timeout(25000) });
       const data: PollResult = await res.json();
       setLiveData(data);
       setLastUpdated(new Date());
