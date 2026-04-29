@@ -1,6 +1,33 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Icon from "@/components/ui/icon";
 type IconName = string;
+
+const ONU_POLL_URL = "https://functions.poehali.dev/86548b0d-d3e0-43fb-ae33-103f945e7664";
+
+interface OnuDevice {
+  id: string;
+  index: string;
+  mac: string;
+  sn: string;
+  status: string;
+  signal: number | null;
+  tx: number | null;
+  olt: string;
+  port: string;
+  ip: string;
+  uptime: string;
+  model: string;
+}
+
+interface PollResult {
+  onu_list: OnuDevice[];
+  total: number;
+  online: number;
+  offline: number;
+  warning: number;
+  host: string;
+  error?: string;
+}
 
 type Section = "dashboard" | "devices" | "signals" | "events" | "analytics" | "settings";
 
@@ -102,24 +129,27 @@ function EventIcon({ type }: { type: string }) {
 
 // ─── SECTIONS ────────────────────────────────────────────────────────────────
 
-function Dashboard() {
-  const online  = ONU_DATA.filter(d => d.status === "online").length;
-  const offline = ONU_DATA.filter(d => d.status === "offline").length;
-  const warning = ONU_DATA.filter(d => d.status === "warning").length;
-  const total   = ONU_DATA.length;
+function Dashboard({ onu, loading }: { onu: OnuDevice[]; loading: boolean }) {
+  const online  = onu.filter(d => d.status === "online").length;
+  const offline = onu.filter(d => d.status === "offline").length;
+  const warning = onu.filter(d => d.status === "warning").length;
+  const total   = onu.length;
 
   const kpis = [
     { label: "Всего устройств", value: total,   icon: "Router",        color: "hsl(210 100% 56%)", sub: "ONU зарегистрировано" },
-    { label: "В сети",          value: online,  icon: "CheckCircle2",  color: "hsl(142 76% 44%)", sub: `${Math.round(online/total*100)}% доступность` },
+    { label: "В сети",          value: online,  icon: "CheckCircle2",  color: "hsl(142 76% 44%)", sub: total > 0 ? `${Math.round(online/total*100)}% доступность` : "—" },
     { label: "Внимание",        value: warning, icon: "AlertTriangle", color: "hsl(38 92% 50%)",  sub: "Слабый сигнал" },
     { label: "Офлайн",          value: offline, icon: "XCircle",       color: "hsl(0 72% 51%)",   sub: "Нет связи" },
   ];
 
-  const oltStats = [
-    { name: "OLT-01", total: 5, online: 4, load: 78 },
-    { name: "OLT-02", total: 3, online: 2, load: 55 },
-    { name: "OLT-03", total: 2, online: 2, load: 92 },
-  ];
+  // OLT stats grouped from live data
+  const oltNames = [...new Set(onu.map(d => d.olt))].sort();
+  const oltStats = oltNames.map(name => {
+    const devices = onu.filter(d => d.olt === name);
+    const on = devices.filter(d => d.status === "online").length;
+    const load = devices.length > 0 ? Math.round((on / devices.length) * 100) : 0;
+    return { name, total: devices.length, online: on, load };
+  });
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -203,7 +233,7 @@ function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {ONU_DATA.filter(d => d.status !== "online").map(d => (
+            {onu.filter(d => d.status !== "online").map(d => (
               <tr key={d.id} className="border-t border-border">
                 <td className="py-3 font-mono-data text-xs font-medium text-primary">{d.id}</td>
                 <td className="py-3"><StatusBadge status={d.status} /></td>
@@ -219,13 +249,13 @@ function Dashboard() {
   );
 }
 
-function Devices() {
+function Devices({ onu, loading }: { onu: OnuDevice[]; loading: boolean }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
-  const filtered = ONU_DATA.filter(d => {
+  const filtered = onu.filter(d => {
     const q = search.toLowerCase();
-    const matchSearch = !q || d.id.toLowerCase().includes(q) || d.ip.includes(q) || d.mac.toLowerCase().includes(q) || d.model.toLowerCase().includes(q);
+    const matchSearch = !q || d.id.toLowerCase().includes(q) || (d.ip || '').includes(q) || d.mac.toLowerCase().includes(q) || d.model.toLowerCase().includes(q) || d.sn.toLowerCase().includes(q);
     const matchFilter = filter === "all" || d.status === filter;
     return matchSearch && matchFilter;
   });
@@ -288,19 +318,28 @@ function Devices() {
   );
 }
 
-function Signals() {
-  const validSignals = SIGNAL_DATA.map(d => d.rx);
-  const avg = (validSignals.reduce((a, b) => a + b, 0) / validSignals.length).toFixed(1);
-  const avgTx = (SIGNAL_DATA.reduce((a, b) => a + b.tx, 0) / SIGNAL_DATA.length).toFixed(1);
-  const poor = SIGNAL_DATA.filter(d => d.quality === "poor").length;
+function Signals({ onu, loading }: { onu: OnuDevice[]; loading: boolean }) {
+  const withSignal = onu.filter(d => d.signal !== null);
+  const validRx = withSignal.map(d => d.signal as number);
+  const avg    = validRx.length ? (validRx.reduce((a, b) => a + b, 0) / validRx.length).toFixed(1) : "—";
+  const validTx = onu.filter(d => d.tx !== null).map(d => d.tx as number);
+  const avgTx  = validTx.length ? (validTx.reduce((a, b) => a + b, 0) / validTx.length).toFixed(1) : "—";
+  const poor   = onu.filter(d => d.signal !== null && (d.signal as number) < -28).length;
+
+  const getQuality = (rx: number | null) => {
+    if (rx === null) return "unknown";
+    if (rx > -25) return "excellent";
+    if (rx > -28) return "good";
+    return "poor";
+  };
 
   return (
     <div className="animate-fade-in space-y-4">
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: "Среднее Rx",    value: `${avg} дБм`,  icon: "ArrowDown",     color: "hsl(195 80% 50%)" },
-          { label: "Среднее Tx",    value: `+${avgTx} дБм`, icon: "ArrowUp",     color: "hsl(142 76% 44%)" },
-          { label: "Слабых линков", value: poor,            icon: "AlertTriangle", color: "hsl(38 92% 50%)" },
+          { label: "Среднее Rx",    value: validRx.length ? `${avg} дБм` : "—", icon: "ArrowDown",     color: "hsl(195 80% 50%)" },
+          { label: "Среднее Tx",    value: validTx.length ? `+${avgTx} дБм` : "—", icon: "ArrowUp",    color: "hsl(142 76% 44%)" },
+          { label: "Слабых линков", value: poor,                                    icon: "AlertTriangle", color: "hsl(38 92% 50%)" },
         ].map((k, i) => (
           <div key={i} className="bg-card border border-border rounded-lg p-4 card-hover">
             <div className="flex items-center justify-between mb-2">
@@ -315,32 +354,33 @@ function Signals() {
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         <div className="px-5 py-3 border-b border-border flex items-center justify-between">
           <span className="text-xs uppercase tracking-wider text-muted-foreground font-medium">Уровень сигнала ONU</span>
-          <span className="text-xs text-muted-foreground font-mono-data">Обновлено: 10:45:00</span>
+          {loading && <span className="text-xs text-muted-foreground animate-pulse">Обновление...</span>}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/30">
-                {["ONU ID","Модель","OLT","Rx (дБм)","Tx (дБм)","BER","Уровень","Качество"].map(h => (
+                {["ONU ID","SN","OLT","Rx (дБм)","Tx (дБм)","Уровень","Качество"].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {SIGNAL_DATA.map(d => (
+              {withSignal.map(d => (
                 <tr key={d.id} className="border-b border-border last:border-0 hover:bg-muted/20 transition-colors">
                   <td className="px-4 py-3 font-mono-data text-xs font-semibold text-primary">{d.id}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{d.model}</td>
+                  <td className="px-4 py-3 font-mono-data text-xs text-muted-foreground">{d.sn || d.mac || "—"}</td>
                   <td className="px-4 py-3 text-xs">{d.olt}</td>
-                  <td className="px-4 py-3 min-w-44"><SignalBar value={d.rx} /></td>
-                  <td className="px-4 py-3 font-mono-data text-xs" style={{ color: "hsl(195 80% 55%)" }}>+{d.tx}</td>
-                  <td className="px-4 py-3 font-mono-data text-xs text-muted-foreground">{d.ber}</td>
+                  <td className="px-4 py-3 min-w-44"><SignalBar value={d.signal} /></td>
+                  <td className="px-4 py-3 font-mono-data text-xs" style={{ color: "hsl(195 80% 55%)" }}>
+                    {d.tx !== null ? `+${d.tx}` : "—"}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="w-16 h-1.5 bg-secondary rounded-full overflow-hidden">
-                      <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, ((d.rx + 35) / 20) * 100))}%` }} />
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, (((d.signal ?? -35) + 35) / 20) * 100))}%` }} />
                     </div>
                   </td>
-                  <td className="px-4 py-3"><QualityBadge q={d.quality} /></td>
+                  <td className="px-4 py-3"><QualityBadge q={getQuality(d.signal)} /></td>
                 </tr>
               ))}
             </tbody>
@@ -411,10 +451,10 @@ function Events() {
   );
 }
 
-function Analytics() {
-  const models = ["ZTE F670L","Huawei HG8310M","ZTE F660","TP-Link XC220-G3v"];
-  const modelCounts = models.map(m => ({ name: m, count: ONU_DATA.filter(d => d.model === m).length }));
-  const maxCount = Math.max(...modelCounts.map(m => m.count));
+function Analytics({ onu }: { onu: OnuDevice[] }) {
+  const allModels = [...new Set(onu.map(d => d.model))].filter(Boolean);
+  const modelCounts = allModels.map(m => ({ name: m, count: onu.filter(d => d.model === m).length }));
+  const maxCount = modelCounts.length ? Math.max(...modelCounts.map(m => m.count)) : 1;
 
   const weekData = [
     { day: "Пн", on: 9, off: 1 },
@@ -493,8 +533,8 @@ function Analytics() {
             </tr>
           </thead>
           <tbody>
-            {["OLT-01","OLT-02","OLT-03"].map(olt => {
-              const devices = ONU_DATA.filter(d => d.olt === olt);
+            {[...new Set(onu.map(d => d.olt))].sort().map(olt => {
+              const devices = onu.filter(d => d.olt === olt);
               const on   = devices.filter(d => d.status === "online").length;
               const off  = devices.filter(d => d.status === "offline").length;
               const warn = devices.filter(d => d.status === "warning").length;
@@ -537,7 +577,7 @@ function Toggle({ on, toggle }: { on: boolean; toggle: () => void }) {
   );
 }
 
-function Settings() {
+function Settings({ onRefresh, loading, lastUpdated }: { onRefresh: () => void; loading: boolean; lastUpdated: Date | null }) {
   const [notifyOffline, setNotifyOffline]   = useState(true);
   const [notifyWeak, setNotifyWeak]         = useState(true);
   const [notifyRestore, setNotifyRestore]   = useState(false);
@@ -591,10 +631,10 @@ function Settings() {
         <div className="text-xs uppercase tracking-wider text-muted-foreground font-medium mb-4">Информация о системе</div>
         <div className="grid grid-cols-2 gap-0">
           {[
-            ["Версия ПО",             "1.0.0-beta"],
-            ["База данных",           "PostgreSQL 15"],
-            ["Устройств в базе",      "10 ONU"],
-            ["Последнее обновление",  "29.04.2026 10:45"],
+            ["Версия ПО",             "1.0.0"],
+            ["OLT",                   "CData GPON"],
+            ["Последний опрос",       lastUpdated ? lastUpdated.toLocaleTimeString('ru-RU') : "Ожидание..."],
+            ["Источник данных",       "SNMP v2c"],
           ].map(([k, v]) => (
             <div key={k} className="py-2.5 border-b border-border pr-4">
               <div className="text-xs text-muted-foreground">{k}</div>
@@ -604,9 +644,19 @@ function Settings() {
         </div>
       </div>
 
-      <button className="bg-primary text-primary-foreground px-5 py-2 rounded-md text-sm font-medium hover:opacity-90 transition-opacity">
-        Сохранить настройки
-      </button>
+      <div className="flex gap-3">
+        <button className="bg-primary text-primary-foreground px-5 py-2 rounded-md text-sm font-medium hover:opacity-90 transition-opacity">
+          Сохранить настройки
+        </button>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="flex items-center gap-2 bg-secondary border border-border text-foreground px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+        >
+          <Icon name="RefreshCw" size={14} className={loading ? "animate-spin" : ""} />
+          {loading ? "Опрос OLT..." : "Обновить данные"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -614,8 +664,36 @@ function Settings() {
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 export default function Index() {
-  const [section, setSection]       = useState<Section>("dashboard");
+  const [section, setSection]         = useState<Section>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [liveData, setLiveData]       = useState<PollResult | null>(null);
+  const [loading, setLoading]         = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const fetchOnu = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(ONU_POLL_URL);
+      const data: PollResult = await res.json();
+      setLiveData(data);
+      setLastUpdated(new Date());
+    } catch {
+      // keep previous data on error
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchOnu();
+    const interval = setInterval(fetchOnu, 60000);
+    return () => clearInterval(interval);
+  }, [fetchOnu]);
+
+  // Use live data if available, fall back to static demo
+  const activeOnu: OnuDevice[] = liveData?.onu_list?.length
+    ? liveData.onu_list
+    : ONU_DATA.map(d => ({ ...d, index: d.id.replace('ONU-', ''), sn: '', tx: null }));
 
   const sectionTitles: Record<Section, string> = {
     dashboard: "Главная",
@@ -626,8 +704,8 @@ export default function Index() {
     settings:  "Настройки",
   };
 
-  const online = ONU_DATA.filter(d => d.status === "online").length;
-  const total  = ONU_DATA.length;
+  const online = activeOnu.filter(d => d.status === "online").length;
+  const total  = activeOnu.length;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -693,10 +771,20 @@ export default function Index() {
             <span className="text-xs text-muted-foreground hidden sm:block">/ ONU Monitoring System</span>
           </div>
           <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
-              <Icon name="Clock" size={12} />
-              <span className="font-mono-data">29.04.2026 10:45:30</span>
-            </div>
+            {lastUpdated && (
+              <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
+                <Icon name="Clock" size={12} />
+                <span className="font-mono-data">{lastUpdated.toLocaleTimeString('ru-RU')}</span>
+              </div>
+            )}
+            <button
+              onClick={fetchOnu}
+              disabled={loading}
+              title="Обновить данные"
+              className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40"
+            >
+              <Icon name="RefreshCw" size={15} className={loading ? "animate-spin" : ""} />
+            </button>
             <div className="flex items-center gap-1.5 bg-secondary rounded-md px-2.5 py-1.5">
               <span className="status-dot status-online" />
               <span className="text-xs font-semibold font-mono-data">{online}/{total}</span>
@@ -710,12 +798,12 @@ export default function Index() {
 
         {/* Section content */}
         <main className="flex-1 overflow-y-auto p-6">
-          {section === "dashboard"  && <Dashboard />}
-          {section === "devices"    && <Devices />}
-          {section === "signals"    && <Signals />}
+          {section === "dashboard"  && <Dashboard onu={activeOnu} loading={loading} />}
+          {section === "devices"    && <Devices onu={activeOnu} loading={loading} />}
+          {section === "signals"    && <Signals onu={activeOnu} loading={loading} />}
           {section === "events"     && <Events />}
-          {section === "analytics"  && <Analytics />}
-          {section === "settings"   && <Settings />}
+          {section === "analytics"  && <Analytics onu={activeOnu} />}
+          {section === "settings"   && <Settings onRefresh={fetchOnu} loading={loading} lastUpdated={lastUpdated} />}
         </main>
       </div>
     </div>

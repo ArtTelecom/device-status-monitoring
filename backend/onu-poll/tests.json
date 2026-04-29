@@ -1,0 +1,15 @@
+{
+  "tests": [
+    {
+      "name": "Poll ONU devices via SNMP",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "onu_list": [],
+        "total": 0
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
