@@ -233,8 +233,8 @@ def handler(event: dict, context) -> dict:
         return {'statusCode': 200, 'headers': HEADERS, 'body': ''}
 
     community = os.environ.get('OLT_SNMP_COMMUNITY', 'public')
-    host = '10.255.230.14'
-    port = 161
+    host = os.environ.get('OLT_HOST', '83.239.227.75')
+    port = int(os.environ.get('OLT_SNMP_PORT', '161'))
 
     logger.warning(f"SNMP poll start: {host}:{port} community={community}")
 
