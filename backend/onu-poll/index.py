@@ -240,11 +240,14 @@ def handler(event: dict, context) -> dict:
     params = event.get('queryStringParameters') or {}
     if params.get('debug') == '1':
         result = {}
-        base = '1.3.6.1.4.1.34592.1.3.4.1.1'
-        for col in range(1, 12):
+        base = params.get('base', '1.3.6.1.4.1.34592.1.3.4.1.1')
+        col_from = int(params.get('from', '1'))
+        col_to = int(params.get('to', '20'))
+        for col in range(col_from, col_to + 1):
             oid = f'{base}.{col}'
-            rows = snmp_walk(community, host, port, oid, timeout=5, max_rows=10, full_suffix=True)
-            result[f'col{col}'] = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in list(rows.items())[:5]}
+            rows = snmp_walk(community, host, port, oid, timeout=5, max_rows=5, full_suffix=True)
+            if rows:
+                result[f'col{col}'] = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in list(rows.items())[:3]}
         return {'statusCode': 200, 'headers': HEADERS, 'body': json.dumps(result)}
 
     try:
