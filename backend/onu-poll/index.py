@@ -20,7 +20,8 @@ HEADERS = {
 OID_EPON_BASE   = '1.3.6.1.4.1.34592.1.3.4.1.1'
 OID_EPON_MAC    = '1.3.6.1.4.1.34592.1.3.4.1.1.7'   # MAC адрес ONU
 OID_EPON_STATUS = '1.3.6.1.4.1.34592.1.3.4.1.1.9'   # Статус: есть=online, нет=offline
-OID_EPON_RX     = '1.3.6.1.4.1.34592.1.3.4.1.1.2'   # Uptime/RX
+# Сигнал RX: индекс = onu_num*256 + port_num, значение = dBm без знака (26 = -26 dBm)
+OID_EPON_SIGNAL = '1.3.6.1.4.1.34592.1.3.3.12.1.1.2.1.1'
 OID_IF_OPER_STATUS  = '1.3.6.1.2.1.2.2.1.8'
 OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
@@ -254,7 +255,19 @@ def handler(event: dict, context) -> dict:
         # Индекс: 1.PORT.ONU_NUM (PORT=1-4, ONU_NUM=1-64)
         online_keys = snmp_walk(community, host, port, OID_EPON_STATUS, timeout=5, max_rows=512, full_suffix=True)
         macs        = snmp_walk(community, host, port, OID_EPON_MAC,    timeout=5, max_rows=512, full_suffix=True)
-        logger.warning(f"EPON online keys: {list(online_keys.keys())[:10]}, macs: {list(macs.keys())[:5]}")
+        # Сигнал: индекс = onu_num*256 + port_num (плоский)
+        signals_raw = snmp_walk(community, host, port, OID_EPON_SIGNAL, timeout=5, max_rows=512, full_suffix=False)
+        # Преобразуем в словарь port.onu -> signal
+        signals = {}
+        for idx_str, val in signals_raw.items():
+            try:
+                idx = int(idx_str)
+                port_n = idx & 0xFF
+                onu_n  = idx >> 8
+                signals[f'1.{port_n}.{onu_n}'] = -int(val) if val else None
+            except Exception:
+                pass
+        logger.warning(f"EPON online: {len(online_keys)}, macs: {len(macs)}, signals: {len(signals)}")
 
         # Объединяем все найденные ключи
         all_keys = set(online_keys.keys()) | set(macs.keys())
@@ -269,14 +282,17 @@ def handler(event: dict, context) -> dict:
             is_online = key in online_keys
             mac_raw = macs.get(key)
             mac = format_mac(mac_raw) if mac_raw else ''
+            signal = signals.get(key)
             status = 'online' if is_online else 'offline'
+            if status == 'online' and signal is not None and signal < -27:
+                status = 'warning'
             onu_list.append({
                 'id':     f'P{port_num}-ONU{onu_num.zfill(2)}',
                 'index':  key,
                 'mac':    mac,
                 'sn':     '',
                 'status': status,
-                'signal': None,
+                'signal': signal,
                 'tx':     None,
                 'olt':    'OLT-01',
                 'port':   f'EPON0/{port_num}',
