@@ -28,10 +28,8 @@ OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
 def get_snmp_host():
     """Локальный IP OLT, SNMP порт 161."""
-    host = os.environ.get('OLT_HOST', '10.255.230.14')
-    if ':' in host:
-        host = host.rsplit(':', 1)[0]
-    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '161'))
+    host = '10.255.230.14'
+    snmp_port = 161
     return host, snmp_port
 
 
