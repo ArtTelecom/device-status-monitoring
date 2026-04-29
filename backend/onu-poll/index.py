@@ -27,13 +27,11 @@ OID_IF_DESCR        = '1.3.6.1.2.1.2.2.1.2'
 
 
 def get_snmp_host():
-    """Хост берём из OLT_HOST (убираем порт веб-интерфейса), SNMP порт отдельно."""
-    host_full = os.environ.get('OLT_HOST', '')
-    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '5468'))
-    if ':' in host_full:
-        host = host_full.rsplit(':', 1)[0]
-    else:
-        host = host_full
+    """Локальный IP OLT, SNMP порт 161."""
+    host = os.environ.get('OLT_HOST', '10.255.230.14')
+    if ':' in host:
+        host = host.rsplit(':', 1)[0]
+    snmp_port = int(os.environ.get('OLT_SNMP_PORT', '161'))
     return host, snmp_port
 
 
@@ -43,7 +41,7 @@ def snmp_walk(community, host, port, oid):
     error = None
     try:
         credentials = puresnmp.V2C(community)
-        client = puresnmp.Client(host, credentials, port=port, timeout=8)
+        client = puresnmp.Client(host, credentials, port=port)
         rows = client.walk(oid)
         for varbind in rows:
             oid_str = str(varbind.oid)
