@@ -13,6 +13,7 @@ import OnuList from "./pages/OnuList";
 import OnuDetail from "./pages/OnuDetail";
 import RouterList from "./pages/RouterList";
 import RouterDetail from "./pages/RouterDetail";
+import CoreRouters from "./pages/CoreRouters";
 import Unregistered from "./pages/Unregistered";
 import Events from "./pages/Events";
 import Notifications from "./pages/Notifications";
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/onu/:id" element={<OnuDetail />} />
             <Route path="/routers" element={<RouterList />} />
             <Route path="/routers/:id" element={<RouterDetail />} />
+            <Route path="/core-routers" element={<CoreRouters />} />
             <Route path="/unregistered" element={<Unregistered />} />
             <Route path="/events" element={<Events />} />
             <Route path="/notifications" element={<Notifications />} />

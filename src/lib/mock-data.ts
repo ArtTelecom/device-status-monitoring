@@ -95,6 +95,47 @@ export interface RouterDevice {
   address: string;
 }
 
+export interface CoreRouterPort {
+  id: number;
+  name: string;
+  type: "SFP+" | "SFP" | "RJ45" | "QSFP+";
+  speed: 1 | 10 | 25 | 40 | 100;
+  status: "up" | "down" | "warning";
+  description: string;
+  trafficIn: number;
+  trafficOut: number;
+  errors: number;
+  uplink: boolean;
+}
+
+export interface CoreRouter {
+  id: string;
+  name: string;
+  vendor: string;
+  model: string;
+  role: string;
+  location: string;
+  photo: string;
+  ip: string;
+  mgmtMac: string;
+  serial: string;
+  firmware: string;
+  uptime: string;
+  status: "online" | "warning" | "offline";
+  cpu: number;
+  ram: number;
+  storage: number;
+  temperature: number;
+  fanSpeed: number;
+  powerLoad: number;
+  powerSupplies: { id: number; status: "ok" | "fail"; power: number }[];
+  ports: CoreRouterPort[];
+  bgpPeers: number;
+  ospfNeighbors: number;
+  routesIpv4: number;
+  routesIpv6: number;
+}
+
 export interface UnregisteredOnu {
   id: string;
   oltId: string;
@@ -366,6 +407,164 @@ function generateRouters(): RouterDevice[] {
 }
 
 export const ROUTERS: RouterDevice[] = generateRouters();
+
+function generateCorePorts(count: number, uplinkCount: number, baseTraffic: number): CoreRouterPort[] {
+  const ports: CoreRouterPort[] = [];
+  const types: ("SFP+" | "SFP" | "RJ45" | "QSFP+")[] = ["SFP+", "SFP+", "RJ45", "SFP+"];
+  const descriptions = [
+    "Uplink → Транзит TransTeleCom",
+    "Uplink → Транзит Ростелеком",
+    "OLT-Центр-01 (PON-агрегация)",
+    "OLT-Север-02 (PON-агрегация)",
+    "OLT-Юг-03 (PON-агрегация)",
+    "Линк к ядру MX-960",
+    "Резервный канал → MSK-IX",
+    "Линк к L3-коммутатору",
+    "Управляющий VLAN",
+    "Биллинг / RADIUS",
+    "Мониторинг (SNMP)",
+    "DMZ → веб-сервисы",
+    "Резерв",
+    "Не используется",
+    "Линк к Wi-Fi контроллеру",
+    "Корпоративный сегмент",
+  ];
+  for (let i = 0; i < count; i++) {
+    const isUplink = i < uplinkCount;
+    const r = Math.random();
+    const status: "up" | "down" | "warning" = i >= count - 2 ? "down" : r < 0.9 ? "up" : "warning";
+    const speed = isUplink ? 10 : i < uplinkCount + 4 ? 10 : 1;
+    ports.push({
+      id: i + 1,
+      name: speed >= 10 ? `Te0/${i + 1}` : `Gi0/${i + 1}`,
+      type: speed >= 10 ? "SFP+" : i % 3 === 0 ? "RJ45" : "SFP",
+      speed: speed as 1 | 10,
+      status,
+      description: descriptions[i] || `Порт ${i + 1}`,
+      trafficIn:
+        status === "down"
+          ? 0
+          : isUplink
+            ? Number((baseTraffic * rand(0.4, 1.2)).toFixed(0))
+            : Number((baseTraffic * rand(0.05, 0.5)).toFixed(0)),
+      trafficOut:
+        status === "down"
+          ? 0
+          : isUplink
+            ? Number((baseTraffic * rand(0.6, 1.5)).toFixed(0))
+            : Number((baseTraffic * rand(0.1, 0.7)).toFixed(0)),
+      errors: status === "warning" ? randInt(50, 5000) : status === "up" ? randInt(0, 20) : 0,
+      uplink: isUplink,
+    });
+  }
+  return ports;
+}
+
+export const CORE_ROUTERS: CoreRouter[] = [
+  {
+    id: "core-1",
+    name: "CORE-MSK-01",
+    vendor: "Cisco",
+    model: "ASR 9001",
+    role: "Магистральный маршрутизатор · BGP/OSPF",
+    location: "ЦОД Центральный, стойка A12",
+    photo: "https://cdn.poehali.dev/projects/4e28f997-118c-46af-9ba3-05afe46c8699/files/36bbe27c-ddb8-4166-bbd2-a2c9365b06e1.jpg",
+    ip: "10.0.0.1",
+    mgmtMac: "00:1A:2B:3C:4D:01",
+    serial: "FOX2348N0KP",
+    firmware: "IOS XR 7.5.2",
+    uptime: "184д 7ч 42м",
+    status: "online",
+    cpu: 28,
+    ram: 47,
+    storage: 34,
+    temperature: 42,
+    fanSpeed: 4200,
+    powerLoad: 62,
+    powerSupplies: [
+      { id: 1, status: "ok", power: 245 },
+      { id: 2, status: "ok", power: 240 },
+    ],
+    ports: generateCorePorts(16, 2, 800),
+    bgpPeers: 12,
+    ospfNeighbors: 6,
+    routesIpv4: 945672,
+    routesIpv6: 187432,
+  },
+  {
+    id: "core-2",
+    name: "CORE-MSK-02",
+    vendor: "Juniper",
+    model: "MX204",
+    role: "Резервный маршрутизатор · BGP",
+    location: "ЦОД Центральный, стойка A14",
+    photo: "https://cdn.poehali.dev/projects/4e28f997-118c-46af-9ba3-05afe46c8699/files/6edebf55-843c-4bcf-ae62-52a5f5c92f94.jpg",
+    ip: "10.0.0.2",
+    mgmtMac: "00:1A:2B:3C:4D:02",
+    serial: "JN1184729AC",
+    firmware: "Junos 21.4R3",
+    uptime: "92д 14ч 11м",
+    status: "warning",
+    cpu: 71,
+    ram: 68,
+    storage: 52,
+    temperature: 58,
+    fanSpeed: 5400,
+    powerLoad: 78,
+    powerSupplies: [
+      { id: 1, status: "ok", power: 310 },
+      { id: 2, status: "fail", power: 0 },
+    ],
+    ports: generateCorePorts(12, 2, 1200),
+    bgpPeers: 8,
+    ospfNeighbors: 4,
+    routesIpv4: 942103,
+    routesIpv6: 184872,
+  },
+  {
+    id: "core-3",
+    name: "BORDER-RT-01",
+    vendor: "MikroTik",
+    model: "CCR2004-1G-12S+2XS",
+    role: "Граничный маршрутизатор · NAT/QoS",
+    location: "ЦОД Центральный, стойка B07",
+    photo: "https://cdn.poehali.dev/projects/4e28f997-118c-46af-9ba3-05afe46c8699/files/63330f23-43fd-46d3-89b1-914eaa853751.jpg",
+    ip: "10.0.0.3",
+    mgmtMac: "00:1A:2B:3C:4D:03",
+    serial: "HFX98K4LPM2",
+    firmware: "RouterOS 7.13.4",
+    uptime: "47д 22ч 03м",
+    status: "online",
+    cpu: 35,
+    ram: 41,
+    storage: 18,
+    temperature: 51,
+    fanSpeed: 3800,
+    powerLoad: 45,
+    powerSupplies: [
+      { id: 1, status: "ok", power: 95 },
+      { id: 2, status: "ok", power: 92 },
+    ],
+    ports: generateCorePorts(14, 2, 600),
+    bgpPeers: 4,
+    ospfNeighbors: 3,
+    routesIpv4: 134522,
+    routesIpv6: 28100,
+  },
+];
+
+export function generateCoreTraffic(points = 60) {
+  const arr = [];
+  for (let i = 0; i < points; i++) {
+    const time = new Date(Date.now() - (points - i) * 60 * 1000);
+    arr.push({
+      time: time.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      in: Number((rand(800, 2400) + Math.sin(i / 6) * 600).toFixed(0)),
+      out: Number((rand(2000, 6500) + Math.sin(i / 6) * 1800).toFixed(0)),
+    });
+  }
+  return arr;
+}
 
 export const EVENTS: NetworkEvent[] = [
   { id: 1, time: "10:42:18", date: "03.05.2026", type: "error", source: "ONU-0024", category: "los", message: "Потеря оптического сигнала (LOS)", acknowledged: false },

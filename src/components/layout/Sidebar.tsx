@@ -14,6 +14,7 @@ const NAV_GROUPS = [
   {
     title: "Оборудование",
     items: [
+      { to: "/core-routers", label: "Головные роутеры", icon: "Cpu" },
       { to: "/devices", label: "OLT", icon: "Server" },
       { to: "/onu", label: "ONU / Абоненты", icon: "Router" },
       { to: "/routers", label: "Роутеры", icon: "Wifi" },
