@@ -12,7 +12,7 @@ import {
   PolarAngleAxis,
 } from "recharts";
 import Icon from "@/components/ui/icon";
-import { fetchMikrotik, fmtBytes, parseUptimeRouterOS, MikrotikData, MikrotikInterface } from "@/lib/mikrotik-api";
+import { fetchMikrotik, fmtBytes, fmtBytesExact, fmtBps, parseUptimeFull, MikrotikData, MikrotikInterface } from "@/lib/mikrotik-api";
 
 const REAL_PHOTO = "https://cdn.poehali.dev/projects/4e28f997-118c-46af-9ba3-05afe46c8699/files/63330f23-43fd-46d3-89b1-914eaa853751.jpg";
 
@@ -22,12 +22,16 @@ function MetricRing({
   unit,
   color,
   size = 88,
+  precision = 1,
+  subText,
 }: {
   value: number;
   label: string;
   unit: string;
   color: string;
   size?: number;
+  precision?: number;
+  subText?: string;
 }) {
   const data = [{ name: label, value, fill: color }];
   return (
@@ -48,10 +52,11 @@ function MetricRing({
           </RadialBarChart>
         </ResponsiveContainer>
         <div className="absolute inset-0 flex flex-col items-center justify-center" style={{ width: size, height: size }}>
-          <div className="font-mono-data text-xl font-bold" style={{ color }}>
-            {value}
-            <span className="text-xs ml-0.5">{unit}</span>
+          <div className="font-mono-data text-lg font-bold leading-none" style={{ color }}>
+            {value.toFixed(precision)}
+            <span className="text-[9px] ml-0.5">{unit}</span>
           </div>
+          {subText && <div className="text-[8px] text-muted-foreground mt-0.5 font-mono-data">{subText}</div>}
         </div>
       </div>
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-1">{label}</div>
@@ -77,13 +82,6 @@ function PortRow({
     iface.comment?.toLowerCase().includes("uplink") ||
     iface.comment?.toLowerCase().includes("rt-") ||
     iface.name.toLowerCase().startsWith("ether1");
-
-  function fmtBps(b: number): string {
-    if (b >= 1_000_000_000) return `${(b / 1_000_000_000).toFixed(2)} Гбит/с`;
-    if (b >= 1_000_000) return `${(b / 1_000_000).toFixed(1)} Мбит/с`;
-    if (b >= 1_000) return `${(b / 1_000).toFixed(1)} Кбит/с`;
-    return `${b.toFixed(0)} бит/с`;
-  }
 
   return (
     <div className="grid grid-cols-12 gap-3 items-center py-2 px-3 hover:bg-secondary/40 rounded text-xs border-b border-border/50">
@@ -114,9 +112,9 @@ function PortRow({
       </div>
 
       <div className="col-span-3">
-        <div className="flex items-center gap-1.5 mb-1">
+        <div className="flex items-center gap-1.5 mb-1" title={`${speedIn.toFixed(0)} бит/с`}>
           <Icon name="ArrowDown" size={10} className="text-blue-400" />
-          <span className="font-mono-data text-[10px] text-blue-400 w-24 truncate">{fmtBps(speedIn)}</span>
+          <span className="font-mono-data text-[10px] text-blue-400 w-28 truncate">{fmtBps(speedIn, 3)}</span>
           <div className="flex-1 h-1 bg-secondary rounded-full overflow-hidden">
             <div
               className="h-full rounded-full transition-all"
@@ -128,9 +126,9 @@ function PortRow({
             />
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5" title={`${speedOut.toFixed(0)} бит/с`}>
           <Icon name="ArrowUp" size={10} className="text-purple-400" />
-          <span className="font-mono-data text-[10px] text-purple-400 w-24 truncate">{fmtBps(speedOut)}</span>
+          <span className="font-mono-data text-[10px] text-purple-400 w-28 truncate">{fmtBps(speedOut, 3)}</span>
           <div className="flex-1 h-1 bg-secondary rounded-full overflow-hidden">
             <div
               className="h-full rounded-full transition-all"
@@ -145,9 +143,11 @@ function PortRow({
       </div>
 
       <div className="col-span-2 font-mono-data text-[10px] text-muted-foreground">
-        Σ ↓ {fmtBytes(iface.rx_bytes)}
-        <br />
-        Σ ↑ {fmtBytes(iface.tx_bytes)}
+        <div title={fmtBytesExact(iface.rx_bytes)}>Σ ↓ {fmtBytes(iface.rx_bytes, 3)}</div>
+        <div title={fmtBytesExact(iface.tx_bytes)}>Σ ↑ {fmtBytes(iface.tx_bytes, 3)}</div>
+        <div className="text-muted-foreground/60 text-[9px] mt-0.5">
+          {iface.rx_packets.toLocaleString("ru-RU")} / {iface.tx_packets.toLocaleString("ru-RU")} пак.
+        </div>
       </div>
 
       <div className="col-span-2 font-mono-data text-[10px] text-muted-foreground">
@@ -203,8 +203,8 @@ export default function RealMikrotikCard() {
             ...h.slice(-29),
             {
               time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              in: Math.round(totalIn / 1_000_000),
-              out: Math.round(totalOut / 1_000_000),
+              in: Number((totalIn / 1_000_000).toFixed(3)),
+              out: Number((totalOut / 1_000_000).toFixed(3)),
             },
           ]);
         }
@@ -256,13 +256,10 @@ export default function RealMikrotikCard() {
   const totalErrors = data.interfaces.list.reduce((s, p) => s + p.rx_errors + p.tx_errors, 0);
   const totalIn = data.interfaces.list.reduce((s, p) => s + p.rx_bytes, 0);
   const totalOut = data.interfaces.list.reduce((s, p) => s + p.tx_bytes, 0);
-
-  function fmtBps(b: number): string {
-    if (b >= 1_000_000_000) return `${(b / 1_000_000_000).toFixed(2)} Гбит/с`;
-    if (b >= 1_000_000) return `${(b / 1_000_000).toFixed(1)} Мбит/с`;
-    if (b >= 1_000) return `${(b / 1_000).toFixed(1)} Кбит/с`;
-    return `${b.toFixed(0)} бит/с`;
-  }
+  const totalPackets = data.interfaces.list.reduce((s, p) => s + p.rx_packets + p.tx_packets, 0);
+  const uptime = parseUptimeFull(data.system.uptime);
+  const tempC = parseFloat(data.health.temperature || "0");
+  const voltageV = parseFloat(data.health.voltage || "0");
 
   return (
     <div
@@ -322,8 +319,8 @@ export default function RealMikrotikCard() {
                   S/N: <span className="font-mono-data text-foreground">{data.routerboard.serial}</span>
                 </span>
                 <span className="text-muted-foreground">·</span>
-                <span className="text-muted-foreground">
-                  Uptime: <span className="font-mono-data text-foreground">{parseUptimeRouterOS(data.system.uptime)}</span>
+                <span className="text-muted-foreground" title={`Точно: ${data.system.uptime}`}>
+                  Uptime: <span className="font-mono-data text-foreground">{uptime.pretty}</span>
                 </span>
               </div>
             </div>
@@ -343,25 +340,38 @@ export default function RealMikrotikCard() {
               value={data.resources.cpu_load}
               label="CPU"
               unit="%"
+              precision={0}
+              subText={`${data.resources.cpu_count}×${data.resources.cpu_frequency}MHz`}
               color={data.resources.cpu_load > 70 ? "#ef4444" : data.resources.cpu_load > 50 ? "#f59e0b" : "#3b82f6"}
             />
             <MetricRing
-              value={Math.round(data.resources.memory_pct)}
+              value={data.resources.memory_pct}
               label="RAM"
               unit="%"
+              precision={2}
+              subText={`${data.resources.memory_used_mb.toFixed(1)}/${data.resources.memory_total_mb.toFixed(0)}МБ`}
               color={data.resources.memory_pct > 75 ? "#ef4444" : data.resources.memory_pct > 60 ? "#f59e0b" : "#a855f7"}
             />
-            <MetricRing value={Math.round(data.resources.storage_pct)} label="Диск" unit="%" color="#10b981" />
             <MetricRing
-              value={parseInt(data.health.temperature || "0")}
-              label="Темп."
-              unit="°C"
-              color={parseInt(data.health.temperature || "0") > 60 ? "#ef4444" : "#06b6d4"}
+              value={data.resources.storage_pct}
+              label="Диск"
+              unit="%"
+              precision={2}
+              subText={`${data.resources.storage_used_mb.toFixed(1)}/${data.resources.storage_total_mb.toFixed(0)}МБ`}
+              color="#10b981"
             />
             <MetricRing
-              value={Math.round(parseFloat(data.health.voltage || "0"))}
+              value={tempC}
+              label="Темп."
+              unit="°C"
+              precision={1}
+              color={tempC > 60 ? "#ef4444" : "#06b6d4"}
+            />
+            <MetricRing
+              value={voltageV}
               label="Питание"
               unit="В"
+              precision={1}
               color="#f59e0b"
             />
           </div>
@@ -380,8 +390,15 @@ export default function RealMikrotikCard() {
                 </div>
                 <span className="text-[10px] uppercase tracking-wider text-blue-300">Скорость входящего</span>
               </div>
-              <div className="font-mono-data text-2xl font-bold text-blue-300">{fmtBps(totalInBps)}</div>
-              <div className="text-[10px] text-blue-300/60">Всего: {fmtBytes(totalIn)}</div>
+              <div className="font-mono-data text-2xl font-bold text-blue-300" title={`${totalInBps.toFixed(0)} бит/с`}>
+                {fmtBps(totalInBps, 3)}
+              </div>
+              <div className="text-[10px] text-blue-300/70" title={fmtBytesExact(totalIn)}>
+                Σ скачано: <span className="font-mono-data">{fmtBytes(totalIn, 3)}</span>
+              </div>
+              <div className="text-[9px] text-blue-300/50 font-mono-data mt-0.5">
+                {fmtBytesExact(totalIn)}
+              </div>
               <div className="absolute right-2 top-2 opacity-20">
                 <Icon name="Download" size={48} className="text-blue-400" />
               </div>
@@ -399,9 +416,14 @@ export default function RealMikrotikCard() {
                 </div>
                 <span className="text-[10px] uppercase tracking-wider text-purple-300">Скорость исходящего</span>
               </div>
-              <div className="font-mono-data text-2xl font-bold text-purple-300">{fmtBps(totalOutBps)}</div>
-              <div className="text-[10px] text-purple-300/60">
-                Всего: {fmtBytes(totalOut)} · {portsUp}/{data.interfaces.count} активно
+              <div className="font-mono-data text-2xl font-bold text-purple-300" title={`${totalOutBps.toFixed(0)} бит/с`}>
+                {fmtBps(totalOutBps, 3)}
+              </div>
+              <div className="text-[10px] text-purple-300/70" title={fmtBytesExact(totalOut)}>
+                Σ отдано: <span className="font-mono-data">{fmtBytes(totalOut, 3)}</span>
+              </div>
+              <div className="text-[9px] text-purple-300/50 font-mono-data mt-0.5">
+                {fmtBytesExact(totalOut)} · {portsUp}/{data.interfaces.count}
               </div>
               <div className="absolute right-2 top-2 opacity-20">
                 <Icon name="Upload" size={48} className="text-purple-400" />
@@ -518,18 +540,40 @@ export default function RealMikrotikCard() {
                   <div className="font-mono-data text-base">
                     {data.resources.cpu_count}× {data.resources.cpu_frequency} МГц
                   </div>
+                  <div className="text-[10px] text-muted-foreground mt-1">
+                    Загрузка: <span className="font-mono-data">{data.resources.cpu_load}%</span>
+                  </div>
                 </div>
                 <div className="bg-secondary/40 rounded-md p-3">
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">RAM</div>
                   <div className="font-mono-data text-base">
-                    {data.resources.memory_used_mb} / {data.resources.memory_total_mb} МБ
+                    {data.resources.memory_used_mb.toFixed(2)} / {data.resources.memory_total_mb.toFixed(2)} МБ
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-1 font-mono-data">
+                    {data.resources.memory_pct.toFixed(2)}%
                   </div>
                 </div>
                 <div className="bg-secondary/40 rounded-md p-3">
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Диск</div>
                   <div className="font-mono-data text-base">
-                    {data.resources.storage_used_mb} / {data.resources.storage_total_mb} МБ
+                    {data.resources.storage_used_mb.toFixed(2)} / {data.resources.storage_total_mb.toFixed(2)} МБ
                   </div>
+                  <div className="text-[10px] text-muted-foreground mt-1 font-mono-data">
+                    {data.resources.storage_pct.toFixed(2)}%
+                  </div>
+                </div>
+                <div className="bg-secondary/40 rounded-md p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Температура</div>
+                  <div className="font-mono-data text-base">{tempC.toFixed(1)} °C</div>
+                </div>
+                <div className="bg-secondary/40 rounded-md p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Питание</div>
+                  <div className="font-mono-data text-base">{voltageV.toFixed(2)} В</div>
+                </div>
+                <div className="bg-secondary/40 rounded-md p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Пакеты</div>
+                  <div className="font-mono-data text-base">{totalPackets.toLocaleString("ru-RU")}</div>
+                  <div className="text-[10px] text-muted-foreground mt-1">всего IN+OUT</div>
                 </div>
               </div>
             </div>

@@ -341,12 +341,12 @@ def handler(event: dict, context) -> dict:
         total_mem = safe_int(res.get('total-memory', 0))
         free_mem = safe_int(res.get('free-memory', 0))
         used_mem = total_mem - free_mem
-        mem_pct = round(used_mem / total_mem * 100, 1) if total_mem > 0 else 0
+        mem_pct = round(used_mem / total_mem * 100, 2) if total_mem > 0 else 0
 
         total_hdd = safe_int(res.get('total-hdd-space', 0))
         free_hdd = safe_int(res.get('free-hdd-space', 0))
         used_hdd = total_hdd - free_hdd
-        hdd_pct = round(used_hdd / total_hdd * 100, 1) if total_hdd > 0 else 0
+        hdd_pct = round(used_hdd / total_hdd * 100, 2) if total_hdd > 0 else 0
 
         bgp_active = sum(1 for p in bgp_peers if p.get('established') == 'true' or p.get('state') == 'established')
         ospf_full = sum(1 for n in ospf_neighbors if 'full' in str(n.get('state', '')).lower())
@@ -377,11 +377,17 @@ def handler(event: dict, context) -> dict:
                 'cpu_load': safe_int(res.get('cpu-load', 0)),
                 'cpu_count': safe_int(res.get('cpu-count', 1)),
                 'cpu_frequency': safe_int(res.get('cpu-frequency', 0)),
-                'memory_total_mb': round(total_mem / 1024 / 1024, 1),
-                'memory_used_mb': round(used_mem / 1024 / 1024, 1),
+                'memory_total_bytes': total_mem,
+                'memory_used_bytes': used_mem,
+                'memory_free_bytes': free_mem,
+                'memory_total_mb': round(total_mem / 1024 / 1024, 2),
+                'memory_used_mb': round(used_mem / 1024 / 1024, 2),
                 'memory_pct': mem_pct,
-                'storage_total_mb': round(total_hdd / 1024 / 1024, 1),
-                'storage_used_mb': round(used_hdd / 1024 / 1024, 1),
+                'storage_total_bytes': total_hdd,
+                'storage_used_bytes': used_hdd,
+                'storage_free_bytes': free_hdd,
+                'storage_total_mb': round(total_hdd / 1024 / 1024, 2),
+                'storage_used_mb': round(used_hdd / 1024 / 1024, 2),
                 'storage_pct': hdd_pct,
             },
             'health': health_data,

@@ -74,14 +74,45 @@ export function parseUptimeRouterOS(s: string): string {
   return s.replace(/(\d+)([wdhms])/g, (_, n, u) => `${n}${m[u]} `).trim();
 }
 
-export function fmtBytes(bytes: number): string {
+export function fmtBytes(bytes: number, precision = 2): string {
   if (!bytes) return "0 Б";
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"];
   let i = 0;
   let n = bytes;
   while (n >= 1024 && i < units.length - 1) {
     n /= 1024;
     i++;
   }
-  return `${n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0)} ${units[i]}`;
+  return `${n.toFixed(precision)} ${units[i]}`;
+}
+
+export function fmtBytesExact(bytes: number): string {
+  return `${bytes.toLocaleString("ru-RU")} Б`;
+}
+
+export function fmtBps(bps: number, precision = 2): string {
+  if (bps >= 1_000_000_000) return `${(bps / 1_000_000_000).toFixed(precision)} Гбит/с`;
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(precision)} Мбит/с`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(precision)} Кбит/с`;
+  return `${bps.toFixed(0)} бит/с`;
+}
+
+export function parseUptimeFull(s: string): { days: number; hours: number; minutes: number; seconds: number; weeks: number; pretty: string } {
+  if (!s) return { days: 0, hours: 0, minutes: 0, seconds: 0, weeks: 0, pretty: "—" };
+  const m = (s.match(/(\d+)([wdhms])/g) || []).reduce((acc: Record<string, number>, x) => {
+    const n = parseInt(x);
+    const u = x.replace(/\d/g, "");
+    acc[u] = n;
+    return acc;
+  }, {});
+  const weeks = m.w || 0;
+  const days = m.d || 0;
+  const hours = m.h || 0;
+  const minutes = m.m || 0;
+  const seconds = m.s || 0;
+  const parts = [];
+  if (weeks) parts.push(`${weeks}н`);
+  if (days) parts.push(`${days}д`);
+  parts.push(`${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`);
+  return { weeks, days, hours, minutes, seconds, pretty: parts.join(" ") };
 }
