@@ -58,6 +58,43 @@ export interface NetworkEvent {
   acknowledged: boolean;
 }
 
+export type RouterStatus = "online" | "offline" | "warning";
+export type RouterVendor = "MikroTik" | "Keenetic" | "TP-Link" | "Huawei" | "Asus" | "D-Link";
+
+export interface RouterDevice {
+  id: string;
+  onuId: string | null;
+  oltId: string;
+  name: string;
+  vendor: RouterVendor;
+  model: string;
+  firmware: string;
+  ip: string;
+  mac: string;
+  status: RouterStatus;
+  uptime: string;
+  cpu: number;
+  ram: number;
+  temperature: number;
+  clientsConnected: number;
+  wifi24Clients: number;
+  wifi5Clients: number;
+  ethClients: number;
+  trafficIn: number;
+  trafficOut: number;
+  signalWifi24: number;
+  signalWifi5: number;
+  ssid24: string;
+  ssid5: string;
+  protocol: "SNMP" | "TR-069" | "API" | "SSH";
+  pppUser: string | null;
+  externalIp: string;
+  lat: number;
+  lng: number;
+  lastSeen: string;
+  address: string;
+}
+
 export interface UnregisteredOnu {
   id: string;
   oltId: string;
@@ -264,6 +301,71 @@ function generateOnus(): Onu[] {
 }
 
 export const ONUS: Onu[] = generateOnus();
+
+const ROUTER_VENDORS: { vendor: RouterVendor; models: string[] }[] = [
+  { vendor: "MikroTik", models: ["hAP ac²", "hAP ax³", "RB951Ui-2HnD", "RB4011iGS+"] },
+  { vendor: "Keenetic", models: ["Giga (KN-1011)", "Hopper (KN-3810)", "Viva (KN-1912)", "Speedster (KN-3010)"] },
+  { vendor: "TP-Link", models: ["Archer C6", "Archer AX23", "Archer C80"] },
+  { vendor: "Huawei", models: ["AX3 Pro", "WS7200"] },
+  { vendor: "Asus", models: ["RT-AX55", "RT-AC68U"] },
+  { vendor: "D-Link", models: ["DIR-825", "DIR-878"] },
+];
+
+const PROTOCOLS: Array<"SNMP" | "TR-069" | "API" | "SSH"> = ["SNMP", "TR-069", "API", "SSH"];
+
+function generateRouters(): RouterDevice[] {
+  const arr: RouterDevice[] = [];
+  let counter = 1;
+  // Каждый второй ONU имеет за собой роутер абонента
+  ONUS.forEach((onu) => {
+    if (Math.random() > 0.55) return;
+    const v = ROUTER_VENDORS[randInt(0, ROUTER_VENDORS.length - 1)];
+    const model = v.models[randInt(0, v.models.length - 1)];
+    const onuOnline = onu.status === "online" || onu.status === "warning";
+    const r = Math.random();
+    const status: RouterStatus = !onuOnline ? "offline" : r < 0.85 ? "online" : r < 0.94 ? "warning" : "offline";
+    const wifi24 = status === "online" ? randInt(0, 12) : 0;
+    const wifi5 = status === "online" ? randInt(0, 8) : 0;
+    const eth = status === "online" ? randInt(0, 4) : 0;
+    arr.push({
+      id: `RTR-${String(counter).padStart(4, "0")}`,
+      onuId: onu.id,
+      oltId: onu.oltId,
+      name: `Роутер ${onu.name}`,
+      vendor: v.vendor,
+      model: `${v.vendor} ${model}`,
+      firmware: `${randInt(6, 7)}.${randInt(0, 49)}.${randInt(1, 9)}`,
+      ip: `10.${randInt(0, 255)}.${randInt(0, 255)}.${randInt(2, 254)}`,
+      mac: `${Math.random().toString(16).slice(2, 4).toUpperCase()}:${Math.random().toString(16).slice(2, 4).toUpperCase()}:${Math.random().toString(16).slice(2, 4).toUpperCase()}:${Math.random().toString(16).slice(2, 4).toUpperCase()}:${Math.random().toString(16).slice(2, 4).toUpperCase()}:${Math.random().toString(16).slice(2, 4).toUpperCase()}`,
+      status,
+      uptime: status === "offline" ? "—" : `${randInt(1, 60)}д ${randInt(0, 23)}ч`,
+      cpu: status === "online" ? randInt(2, 65) : 0,
+      ram: status === "online" ? randInt(15, 80) : 0,
+      temperature: status === "offline" ? 0 : randInt(35, 75),
+      clientsConnected: wifi24 + wifi5 + eth,
+      wifi24Clients: wifi24,
+      wifi5Clients: wifi5,
+      ethClients: eth,
+      trafficIn: status === "online" ? Number(rand(0.1, 80).toFixed(1)) : 0,
+      trafficOut: status === "online" ? Number(rand(0.5, 350).toFixed(1)) : 0,
+      signalWifi24: status === "online" ? randInt(-75, -35) : 0,
+      signalWifi5: status === "online" ? randInt(-78, -38) : 0,
+      ssid24: `ISP_${randInt(1000, 9999)}_2G`,
+      ssid5: `ISP_${randInt(1000, 9999)}_5G`,
+      protocol: PROTOCOLS[randInt(0, PROTOCOLS.length - 1)],
+      pppUser: Math.random() > 0.4 ? `user${counter}@isp.ru` : null,
+      externalIp: `188.${randInt(0, 255)}.${randInt(0, 255)}.${randInt(2, 254)}`,
+      lat: onu.lat + rand(-0.001, 0.001),
+      lng: onu.lng + rand(-0.001, 0.001),
+      lastSeen: status === "online" ? "только что" : `${randInt(1, 120)} мин назад`,
+      address: onu.address,
+    });
+    counter++;
+  });
+  return arr;
+}
+
+export const ROUTERS: RouterDevice[] = generateRouters();
 
 export const EVENTS: NetworkEvent[] = [
   { id: 1, time: "10:42:18", date: "03.05.2026", type: "error", source: "ONU-0024", category: "los", message: "Потеря оптического сигнала (LOS)", acknowledged: false },

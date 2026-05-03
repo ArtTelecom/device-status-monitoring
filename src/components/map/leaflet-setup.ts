@@ -40,4 +40,15 @@ export function makeOnuIcon(status: string) {
   });
 }
 
+export function makeRouterIcon(status: string) {
+  const color =
+    status === "online" ? "#a855f7" : status === "warning" ? "#f59e0b" : "#6b7280";
+  return L.divIcon({
+    className: "router-marker",
+    html: `<div style="width:18px;height:18px;border-radius:4px;background:${color};border:2px solid #0a0e14;box-shadow:0 0 8px ${color};display:flex;align-items:center;justify-content:center;color:white;font-size:9px;font-weight:bold;">R</div>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+}
+
 export default L;

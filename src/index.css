@@ -164,6 +164,41 @@
     background-size: 32px 32px;
   }
 
+  .leaflet-container {
+    background: #0a0e14 !important;
+    font-family: inherit;
+  }
+  .leaflet-popup-content-wrapper,
+  .leaflet-popup-tip {
+    background: hsl(220 14% 11%) !important;
+    color: hsl(210 20% 92%) !important;
+    border: 1px solid hsl(220 12% 18%) !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5) !important;
+  }
+  .leaflet-popup-content {
+    margin: 12px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .leaflet-popup-close-button {
+    color: hsl(215 14% 50%) !important;
+  }
+  .leaflet-control-zoom a {
+    background: hsl(220 14% 11%) !important;
+    color: hsl(210 20% 92%) !important;
+    border-color: hsl(220 12% 18%) !important;
+  }
+  .leaflet-control-zoom a:hover {
+    background: hsl(220 12% 16%) !important;
+  }
+  .leaflet-control-attribution {
+    background: hsl(220 14% 11% / 0.8) !important;
+    color: hsl(215 14% 50%) !important;
+  }
+  .leaflet-control-attribution a {
+    color: hsl(210 100% 60%) !important;
+  }
+
   .card-hover {
     transition:
       border-color 0.2s,

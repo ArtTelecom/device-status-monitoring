@@ -11,6 +11,8 @@ import Devices from "./pages/Devices";
 import DeviceDetail from "./pages/DeviceDetail";
 import OnuList from "./pages/OnuList";
 import OnuDetail from "./pages/OnuDetail";
+import RouterList from "./pages/RouterList";
+import RouterDetail from "./pages/RouterDetail";
 import Unregistered from "./pages/Unregistered";
 import Events from "./pages/Events";
 import Notifications from "./pages/Notifications";
@@ -38,6 +40,8 @@ const App = () => (
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/onu" element={<OnuList />} />
             <Route path="/onu/:id" element={<OnuDetail />} />
+            <Route path="/routers" element={<RouterList />} />
+            <Route path="/routers/:id" element={<RouterDetail />} />
             <Route path="/unregistered" element={<Unregistered />} />
             <Route path="/events" element={<Events />} />
             <Route path="/notifications" element={<Notifications />} />
