@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {
+      "name": "Базовый запрос с дефолтным IP",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "host": "string",
+        "port": "number",
+        "reachable": "boolean"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "OPTIONS CORS",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    }
+  ]
+}
