@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import Icon from "@/components/ui/icon";
 import PageHeader from "@/components/common/PageHeader";
+import RealMikrotikCard from "@/components/RealMikrotikCard";
 import { CORE_ROUTERS, generateCoreTraffic } from "@/lib/mock-data";
 
 function fmtBytes(mbps: number) {
@@ -551,11 +552,33 @@ export default function CoreRouters() {
         </div>
       </div>
 
-      {/* CORE ROUTER CARDS */}
-      <div className="space-y-5">
-        {CORE_ROUTERS.map((r) => (
-          <CoreRouterCard key={r.id} router={r} />
-        ))}
+      {/* REAL MIKROTIK */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="relative flex">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" style={{ boxShadow: "0 0 8px #22c55e" }} />
+            <span className="absolute w-2 h-2 rounded-full bg-emerald-500 animate-ping opacity-50" />
+          </span>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-emerald-400">
+            Реальное оборудование · Live API
+          </h2>
+        </div>
+        <RealMikrotikCard />
+      </div>
+
+      {/* DEMO ROUTER CARDS */}
+      <div>
+        <div className="flex items-center gap-2 mb-3 mt-8">
+          <Icon name="Box" size={14} className="text-muted-foreground" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Демо-карточки (мок-данные)
+          </h2>
+        </div>
+        <div className="space-y-5">
+          {CORE_ROUTERS.map((r) => (
+            <CoreRouterCard key={r.id} router={r} />
+          ))}
+        </div>
       </div>
     </div>
   );

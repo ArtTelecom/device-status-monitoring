@@ -182,7 +182,12 @@ def handler(event: dict, context) -> dict:
         return {'statusCode': 200, 'headers': cors, 'body': ''}
 
     host = os.environ.get('MIKROTIK_HOST', '')
-    port = int(os.environ.get('MIKROTIK_PORT', '8728'))
+    # Приоритет: MIKROTIK_API_SSL_PORT (TLS) > MIKROTIK_PORT
+    ssl_port = os.environ.get('MIKROTIK_API_SSL_PORT', '').strip()
+    if ssl_port:
+        port = int(ssl_port)
+    else:
+        port = int(os.environ.get('MIKROTIK_PORT', '8728'))
     user = os.environ.get('MIKROTIK_USER', '')
     password = os.environ.get('MIKROTIK_PASSWORD', '')
 
@@ -205,14 +210,46 @@ def handler(event: dict, context) -> dict:
         s.settimeout(15.0)
         s.connect((host, port))
         if use_tls:
-            ctx = ssl.create_default_context()
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            ctx.set_ciphers('DEFAULT:@SECLEVEL=0')
-            s = ctx.wrap_socket(s, server_hostname=host)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1
+            try:
+                ctx.set_ciphers('ALL:@SECLEVEL=0')
+            except ssl.SSLError:
+                pass
+            ctx.options &= ~ssl.OP_NO_SSLv3
+            s = ctx.wrap_socket(s, server_hostname=None)
         return s
 
-    sock = make_socket()
+    try:
+        sock = make_socket()
+    except ssl.SSLError as e:
+        return {
+            'statusCode': 200,
+            'headers': {**cors, 'Content-Type': 'application/json'},
+            'isBase64Encoded': False,
+            'body': json.dumps({
+                'success': False,
+                'error': 'tls_handshake_failed',
+                'message': f'TLS-рукопожатие провалилось: {e}. Проверьте: на MikroTik сертификат подписан и установлен в /ip service api-ssl certificate=...',
+                'host': host,
+                'port': port,
+            }, ensure_ascii=False),
+        }
+    except Exception as e:
+        return {
+            'statusCode': 200,
+            'headers': {**cors, 'Content-Type': 'application/json'},
+            'isBase64Encoded': False,
+            'body': json.dumps({
+                'success': False,
+                'error': type(e).__name__,
+                'message': f'Ошибка подключения: {e}',
+                'host': host,
+                'port': port,
+            }, ensure_ascii=False),
+        }
 
     try:
 
