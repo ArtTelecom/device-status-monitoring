@@ -1,0 +1,30 @@
+{
+  "tests": [
+    {
+      "name": "GET settings (default)",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "router": "object"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "GET peaks",
+      "method": "GET",
+      "path": "/?action=peaks",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "peaks": "array"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "OPTIONS CORS",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    }
+  ]
+}
