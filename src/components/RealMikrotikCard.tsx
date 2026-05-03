@@ -857,7 +857,7 @@ export default function RealMikrotikCard() {
               {[
                 { l: "Интерфейсы", v: `${portsUp}/${data.interfaces.count}`, i: "Cable", c: "#22c55e" },
                 { l: "BGP active", v: data.routing.bgp_active, i: "Globe", c: "#06b6d4" },
-                { l: "Маршруты", v: data.routing.routes_count.toLocaleString("ru-RU"), i: "Route", c: "#3b82f6" },
+                { l: "Маршруты", v: String(data.routing.routes_count), i: "Route", c: "#3b82f6" },
                 {
                   l: "Ошибки",
                   v: totalErrors,
@@ -1002,7 +1002,7 @@ export default function RealMikrotikCard() {
                   </div>
                   <div className="bg-secondary/40 rounded-md p-3">
                     <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Пакеты</div>
-                    <div className="font-mono-data text-base">{totalPackets.toLocaleString("ru-RU")}</div>
+                    <div className="font-mono-data text-base">{totalPackets}</div>
                     <div className="text-[10px] text-muted-foreground mt-1">всего IN+OUT</div>
                   </div>
                 </div>
