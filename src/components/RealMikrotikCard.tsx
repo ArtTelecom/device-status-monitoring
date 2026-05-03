@@ -696,21 +696,6 @@ export default function RealMikrotikCard() {
                 className="absolute inset-0"
                 style={{ background: "linear-gradient(135deg, transparent 30%, rgba(10,14,20,0.85) 100%)" }}
               />
-              {/* Анимированные LED-индикаторы поверх фото */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 flex gap-1">
-                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
-                  <span
-                    key={i}
-                    className="w-1 h-1 rounded-full bg-emerald-400"
-                    style={{
-                      boxShadow: "0 0 4px #22c55e",
-                      animation: `router-led-blink 1.${i % 5}s linear infinite`,
-                      animationDelay: `${i * 0.1}s`,
-                      opacity: 0.85,
-                    }}
-                  />
-                ))}
-              </div>
 
               <div className="absolute top-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur border border-white/10">
                 <span className="relative flex">
