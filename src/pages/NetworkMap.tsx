@@ -1,9 +1,7 @@
-import { useState, useMemo, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from "react-leaflet";
+import { useState, useEffect, useRef } from "react";
+import L from "leaflet";
 import { makeOltIcon, makeOnuIcon, makeRouterIcon } from "@/components/map/leaflet-setup";
 import Icon from "@/components/ui/icon";
-import StatusBadge from "@/components/common/StatusBadge";
-import SignalIndicator from "@/components/common/SignalIndicator";
 import PageHeader from "@/components/common/PageHeader";
 import { OLTS, ONUS, ROUTERS } from "@/lib/mock-data";
 
@@ -16,23 +14,41 @@ type LayerToggle = {
   problems: boolean;
 };
 
-function MapResizer() {
-  const map = useMap();
-  useEffect(() => {
-    const t1 = setTimeout(() => map.invalidateSize(), 100);
-    const t2 = setTimeout(() => map.invalidateSize(), 400);
-    const t3 = setTimeout(() => map.invalidateSize(), 1000);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-    };
-  }, [map]);
-  return null;
+const TILE_URLS: Record<string, string> = {
+  dark: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  light: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  sat: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+};
+
+function statusBadge(status: string) {
+  const map: Record<string, { l: string; c: string }> = {
+    online: { l: "В сети", c: "#22c55e" },
+    warning: { l: "Внимание", c: "#f59e0b" },
+    offline: { l: "Офлайн", c: "#ef4444" },
+    los: { l: "LOS", c: "#dc2626" },
+  };
+  const s = map[status] || { l: status, c: "#6b7280" };
+  return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:4px;font-size:10px;background:${s.c}22;color:${s.c}"><span style="width:6px;height:6px;border-radius:50%;background:${s.c}"></span>${s.l}</span>`;
+}
+
+function signalBar(value: number | null) {
+  if (value === null || value === undefined) return '<span style="color:#888">—</span>';
+  const color = value > -25 ? "#22c55e" : value > -28 ? "#f59e0b" : "#ef4444";
+  return `<span style="font-family:monospace;color:${color}">${value.toFixed(1)} дБм</span>`;
 }
 
 export default function NetworkMap() {
-  const [mounted, setMounted] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const layerGroupsRef = useRef<{
+    olts: L.LayerGroup;
+    onus: L.LayerGroup;
+    routers: L.LayerGroup;
+    links: L.LayerGroup;
+    rings: L.LayerGroup;
+  } | null>(null);
+
   const [tileStyle, setTileStyle] = useState<"dark" | "light" | "sat">("dark");
   const [layers, setLayers] = useState<LayerToggle>({
     olts: true,
@@ -46,46 +62,194 @@ export default function NetworkMap() {
   const [selectedOlt, setSelectedOlt] = useState<string | null>(null);
   const [showAddDevice, setShowAddDevice] = useState(false);
 
+  // Init map once
   useEffect(() => {
-    setMounted(true);
+    if (!containerRef.current || mapRef.current) return;
+
+    const map = L.map(containerRef.current, {
+      center: [55.7558, 37.6173],
+      zoom: 11,
+      zoomControl: true,
+      preferCanvas: true,
+    });
+
+    const tile = L.tileLayer(TILE_URLS.dark, {
+      attribution: "&copy; OpenStreetMap, &copy; CartoDB",
+      maxZoom: 19,
+    }).addTo(map);
+
+    const groups = {
+      olts: L.layerGroup().addTo(map),
+      onus: L.layerGroup().addTo(map),
+      routers: L.layerGroup().addTo(map),
+      links: L.layerGroup().addTo(map),
+      rings: L.layerGroup().addTo(map),
+    };
+
+    mapRef.current = map;
+    tileLayerRef.current = tile;
+    layerGroupsRef.current = groups;
+
+    setTimeout(() => map.invalidateSize(), 50);
+    setTimeout(() => map.invalidateSize(), 250);
+    setTimeout(() => map.invalidateSize(), 700);
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      tileLayerRef.current = null;
+      layerGroupsRef.current = null;
+    };
   }, []);
 
-  const filteredOnus = useMemo(() => {
-    let arr = ONUS;
-    if (selectedOlt) arr = arr.filter((o) => o.oltId === selectedOlt);
-    if (filter === "online") arr = arr.filter((o) => o.status === "online");
-    else if (filter === "warning") arr = arr.filter((o) => o.status === "warning");
-    else if (filter === "offline") arr = arr.filter((o) => o.status === "offline" || o.status === "los");
-    if (layers.problems) arr = arr.filter((o) => o.status !== "online");
-    return arr;
-  }, [filter, selectedOlt, layers.problems]);
+  // Update tile layer
+  useEffect(() => {
+    if (!tileLayerRef.current) return;
+    tileLayerRef.current.setUrl(TILE_URLS[tileStyle]);
+  }, [tileStyle]);
 
-  const filteredRouters = useMemo(() => {
-    let arr = ROUTERS;
-    if (selectedOlt) arr = arr.filter((r) => r.oltId === selectedOlt);
-    if (filter === "online") arr = arr.filter((r) => r.status === "online");
-    else if (filter === "warning") arr = arr.filter((r) => r.status === "warning");
-    else if (filter === "offline") arr = arr.filter((r) => r.status === "offline");
-    if (layers.problems) arr = arr.filter((r) => r.status !== "online");
-    return arr;
-  }, [filter, selectedOlt, layers.problems]);
+  // Render markers when filters/layers change
+  useEffect(() => {
+    if (!mapRef.current || !layerGroupsRef.current) return;
+    const groups = layerGroupsRef.current;
 
-  const center: [number, number] = [55.7558, 37.6173];
+    groups.olts.clearLayers();
+    groups.onus.clearLayers();
+    groups.routers.clearLayers();
+    groups.links.clearLayers();
+    groups.rings.clearLayers();
 
-  const linkColor = (rx: number | null) => {
-    if (rx === null) return "#ef4444";
-    if (rx > -25) return "#22c55e";
-    if (rx > -28) return "#f59e0b";
-    return "#ef4444";
-  };
+    let onus = ONUS;
+    if (selectedOlt) onus = onus.filter((o) => o.oltId === selectedOlt);
+    if (filter === "online") onus = onus.filter((o) => o.status === "online");
+    else if (filter === "warning") onus = onus.filter((o) => o.status === "warning");
+    else if (filter === "offline") onus = onus.filter((o) => o.status === "offline" || o.status === "los");
+    if (layers.problems) onus = onus.filter((o) => o.status !== "online");
+
+    let routers = ROUTERS;
+    if (selectedOlt) routers = routers.filter((r) => r.oltId === selectedOlt);
+    if (filter === "online") routers = routers.filter((r) => r.status === "online");
+    else if (filter === "warning") routers = routers.filter((r) => r.status === "warning");
+    else if (filter === "offline") routers = routers.filter((r) => r.status === "offline");
+    if (layers.problems) routers = routers.filter((r) => r.status !== "online");
+
+    if (layers.links) {
+      onus.forEach((onu) => {
+        const olt = OLTS.find((o) => o.id === onu.oltId);
+        if (!olt) return;
+        const color =
+          onu.rxPower === null
+            ? "#ef4444"
+            : onu.rxPower > -25
+              ? "#22c55e"
+              : onu.rxPower > -28
+                ? "#f59e0b"
+                : "#ef4444";
+        const weight = layers.traffic
+          ? Math.max(0.5, Math.min(4, (onu.trafficIn + onu.trafficOut) / 60))
+          : 1;
+        L.polyline(
+          [
+            [olt.lat, olt.lng],
+            [onu.lat, onu.lng],
+          ],
+          {
+            color,
+            weight,
+            opacity: 0.55,
+            dashArray: onu.status === "offline" || onu.status === "los" ? "4,6" : undefined,
+          }
+        ).addTo(groups.links);
+      });
+    }
+
+    if (layers.olts) {
+      OLTS.forEach((olt) => {
+        const c = olt.status === "online" ? "#22c55e" : olt.status === "warning" ? "#f59e0b" : "#ef4444";
+        L.circleMarker([olt.lat, olt.lng], {
+          radius: 28,
+          color: c,
+          fillOpacity: 0.05,
+          weight: 1,
+        }).addTo(groups.rings);
+
+        const marker = L.marker([olt.lat, olt.lng], { icon: makeOltIcon(olt.status) }).addTo(groups.olts);
+        marker.bindPopup(`
+          <div style="min-width:240px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <strong style="font-size:13px">${olt.name}</strong>
+              ${statusBadge(olt.status)}
+            </div>
+            <div style="color:#888;font-size:11px;margin-bottom:6px">${olt.model}</div>
+            <div style="font-size:11px;line-height:1.6">
+              <div>IP: <span style="font-family:monospace">${olt.ip}</span></div>
+              <div>Аптайм: <span style="font-family:monospace">${olt.uptime}</span></div>
+              <div>CPU: ${olt.cpu}% · RAM: ${olt.ram}% · ${olt.temperature}°C</div>
+              <div>↓ ${olt.trafficIn} / ↑ ${olt.trafficOut} Мбит/с</div>
+            </div>
+            <div style="margin-top:6px"><a href="/devices/${olt.id}" style="color:#3b82f6;font-size:11px">Открыть карточку →</a></div>
+          </div>
+        `);
+      });
+    }
+
+    if (layers.onus) {
+      onus.forEach((onu) => {
+        const marker = L.marker([onu.lat, onu.lng], { icon: makeOnuIcon(onu.status) }).addTo(groups.onus);
+        marker.bindPopup(`
+          <div style="min-width:220px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <strong style="font-family:monospace">${onu.id}</strong>
+              ${statusBadge(onu.status)}
+            </div>
+            <div style="color:#888;font-size:11px;margin-bottom:4px">${onu.address}</div>
+            <div style="font-size:11px;line-height:1.6">
+              <div>PON: <span style="font-family:monospace">${onu.pon}/${onu.llid}</span></div>
+              <div>Сигнал: ${signalBar(onu.rxPower)}</div>
+              <div>↓ ${onu.trafficIn} / ↑ ${onu.trafficOut} Мбит/с</div>
+            </div>
+            <div style="margin-top:6px"><a href="/onu/${onu.id}" style="color:#3b82f6;font-size:11px">Открыть карточку →</a></div>
+          </div>
+        `);
+      });
+    }
+
+    if (layers.routers) {
+      routers.forEach((r) => {
+        const marker = L.marker([r.lat, r.lng], { icon: makeRouterIcon(r.status) }).addTo(groups.routers);
+        marker.bindPopup(`
+          <div style="min-width:220px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <strong style="font-family:monospace">${r.id}</strong>
+              ${statusBadge(r.status)}
+            </div>
+            <div style="font-weight:600;font-size:12px">${r.model}</div>
+            <div style="color:#888;font-size:11px;margin-bottom:4px">${r.address}</div>
+            <div style="font-size:11px;line-height:1.6">
+              <div>IP: <span style="font-family:monospace">${r.ip}</span></div>
+              <div>Wi-Fi клиентов: ${r.clientsConnected}</div>
+              <div>CPU: ${r.cpu}% · RAM: ${r.ram}%</div>
+              <div>↓ ${r.trafficIn} / ↑ ${r.trafficOut} Мбит/с</div>
+            </div>
+            <div style="margin-top:6px"><a href="/routers/${r.id}" style="color:#a855f7;font-size:11px">Открыть роутер →</a></div>
+          </div>
+        `);
+      });
+    }
+  }, [layers, filter, selectedOlt]);
+
+  // Resize on window/container changes
+  useEffect(() => {
+    const handler = () => mapRef.current?.invalidateSize();
+    window.addEventListener("resize", handler);
+    const interval = setInterval(handler, 2000);
+    return () => {
+      window.removeEventListener("resize", handler);
+      clearInterval(interval);
+    };
+  }, []);
 
   const totalTraffic = ONUS.reduce((sum, o) => sum + o.trafficIn + o.trafficOut, 0);
-  const tileUrl =
-    tileStyle === "dark"
-      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      : tileStyle === "light"
-        ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-        : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -143,7 +307,10 @@ export default function NetworkMap() {
                 { key: "traffic" as const, label: "Толщина = трафик", icon: "Activity" },
                 { key: "problems" as const, label: "Только проблемные", icon: "AlertTriangle" },
               ].map((l) => (
-                <label key={l.key} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-secondary px-2 py-1.5 rounded">
+                <label
+                  key={l.key}
+                  className="flex items-center gap-2 text-sm cursor-pointer hover:bg-secondary px-2 py-1.5 rounded"
+                >
                   <input
                     type="checkbox"
                     checked={layers[l.key]}
@@ -184,7 +351,9 @@ export default function NetworkMap() {
             <div className="space-y-1.5">
               <button
                 onClick={() => setSelectedOlt(null)}
-                className={`w-full text-left text-xs px-2 py-1.5 rounded ${!selectedOlt ? "bg-primary/15 text-primary" : "hover:bg-secondary"}`}
+                className={`w-full text-left text-xs px-2 py-1.5 rounded ${
+                  !selectedOlt ? "bg-primary/15 text-primary" : "hover:bg-secondary"
+                }`}
               >
                 Все OLT ({OLTS.length})
               </button>
@@ -201,7 +370,11 @@ export default function NetworkMap() {
                     className="status-dot shrink-0"
                     style={{
                       background:
-                        olt.status === "online" ? "hsl(142 76% 44%)" : olt.status === "warning" ? "hsl(38 92% 50%)" : "hsl(0 72% 51%)",
+                        olt.status === "online"
+                          ? "hsl(142 76% 44%)"
+                          : olt.status === "warning"
+                            ? "hsl(38 92% 50%)"
+                            : "hsl(0 72% 51%)",
                     }}
                   />
                 </button>
@@ -212,10 +385,18 @@ export default function NetworkMap() {
           <div className="bg-card border border-border rounded-lg p-4">
             <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">Сводка</h3>
             <div className="space-y-2 text-xs">
-              <div className="flex justify-between"><span className="text-muted-foreground">OLT</span><span className="font-mono-data">{OLTS.length}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">ONU</span><span className="font-mono-data">{filteredOnus.length}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">Роутеров</span><span className="font-mono-data">{filteredRouters.length}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">Линий связи</span><span className="font-mono-data">{filteredOnus.length}</span></div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">OLT</span>
+                <span className="font-mono-data">{OLTS.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">ONU всего</span>
+                <span className="font-mono-data">{ONUS.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Роутеров</span>
+                <span className="font-mono-data">{ROUTERS.length}</span>
+              </div>
               <div className="flex justify-between border-t border-border pt-2 mt-2">
                 <span className="text-muted-foreground">Общий трафик</span>
                 <span className="font-mono-data text-primary">{totalTraffic.toFixed(0)} Мбит/с</span>
@@ -226,11 +407,26 @@ export default function NetworkMap() {
           <div className="bg-card border border-border rounded-lg p-4">
             <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">Легенда</h3>
             <div className="space-y-2 text-xs">
-              <div className="flex items-center gap-2"><span className="w-4 h-4 rounded-sm" style={{ background: "#22c55e" }} /><span>OLT</span></div>
-              <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full" style={{ background: "#22c55e" }} /><span>ONU</span></div>
-              <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm" style={{ background: "#a855f7" }} /><span>Роутер CPE</span></div>
-              <div className="flex items-center gap-2"><span className="w-6 h-0.5" style={{ background: "#22c55e" }} /><span>Хороший сигнал</span></div>
-              <div className="flex items-center gap-2"><span className="w-6 h-0.5" style={{ background: "#f59e0b" }} /><span>Слабый сигнал</span></div>
+              <div className="flex items-center gap-2">
+                <span className="w-4 h-4 rounded-sm" style={{ background: "#22c55e" }} />
+                <span>OLT</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full" style={{ background: "#22c55e" }} />
+                <span>ONU</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-sm" style={{ background: "#a855f7" }} />
+                <span>Роутер CPE</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-6 h-0.5" style={{ background: "#22c55e" }} />
+                <span>Хороший сигнал</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-6 h-0.5" style={{ background: "#f59e0b" }} />
+                <span>Слабый сигнал</span>
+              </div>
             </div>
           </div>
         </div>
@@ -239,135 +435,19 @@ export default function NetworkMap() {
           className="col-span-12 lg:col-span-9 bg-card border border-border rounded-lg overflow-hidden relative"
           style={{ height: "78vh", minHeight: 500 }}
         >
-          {!mounted ? (
-            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-              <Icon name="Loader" size={20} className="animate-spin mr-2" />
-              Загрузка карты...
-            </div>
-          ) : (
-            <MapContainer
-              center={center}
-              zoom={11}
-              style={{ height: "100%", width: "100%", background: "#0a0e14" }}
-              scrollWheelZoom={true}
-            >
-              <MapResizer />
-              <TileLayer
-                key={tileStyle}
-                url={tileUrl}
-                attribution="&copy; OpenStreetMap, &copy; CartoDB"
-                maxZoom={19}
-              />
-
-              {layers.links &&
-                filteredOnus.map((onu) => {
-                  const olt = OLTS.find((o) => o.id === onu.oltId);
-                  if (!olt) return null;
-                  const weight = layers.traffic
-                    ? Math.max(0.5, Math.min(4, (onu.trafficIn + onu.trafficOut) / 60))
-                    : 1;
-                  return (
-                    <Polyline
-                      key={`link-${onu.id}`}
-                      positions={[
-                        [olt.lat, olt.lng],
-                        [onu.lat, onu.lng],
-                      ]}
-                      pathOptions={{
-                        color: linkColor(onu.rxPower),
-                        weight,
-                        opacity: 0.55,
-                        dashArray: onu.status === "offline" || onu.status === "los" ? "4,6" : undefined,
-                      }}
-                    />
-                  );
-                })}
-
-              {layers.olts &&
-                OLTS.map((olt) => (
-                  <CircleMarker
-                    key={`ring-${olt.id}`}
-                    center={[olt.lat, olt.lng]}
-                    radius={28}
-                    pathOptions={{
-                      color: olt.status === "online" ? "#22c55e" : olt.status === "warning" ? "#f59e0b" : "#ef4444",
-                      fillOpacity: 0.05,
-                      weight: 1,
-                    }}
-                  />
-                ))}
-
-              {layers.olts &&
-                OLTS.map((olt) => (
-                  <Marker key={olt.id} position={[olt.lat, olt.lng]} icon={makeOltIcon(olt.status)}>
-                    <Popup>
-                      <div style={{ minWidth: 240 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <strong>{olt.name}</strong>
-                          <StatusBadge status={olt.status} />
-                        </div>
-                        <div style={{ color: "#888", fontSize: 11 }}>{olt.model}</div>
-                        <div style={{ marginTop: 8, fontSize: 11 }}>
-                          <div>IP: <span className="font-mono-data">{olt.ip}</span></div>
-                          <div>CPU: {olt.cpu}% · RAM: {olt.ram}%</div>
-                          <div>Аптайм: {olt.uptime}</div>
-                        </div>
-                        <a href={`/devices/${olt.id}`} style={{ color: "#3b82f6", fontSize: 11 }}>Открыть карточку →</a>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
-
-              {layers.onus &&
-                filteredOnus.map((onu) => (
-                  <Marker key={onu.id} position={[onu.lat, onu.lng]} icon={makeOnuIcon(onu.status)}>
-                    <Popup>
-                      <div style={{ minWidth: 220 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}>
-                          <strong className="font-mono-data">{onu.id}</strong>
-                          <StatusBadge status={onu.status} />
-                        </div>
-                        <div style={{ color: "#888", fontSize: 11 }}>{onu.address}</div>
-                        <div style={{ marginTop: 6, fontSize: 11 }}>
-                          PON: <span className="font-mono-data">{onu.pon}/{onu.llid}</span>
-                        </div>
-                        <div style={{ marginTop: 4 }}><SignalIndicator value={onu.rxPower} /></div>
-                        <a href={`/onu/${onu.id}`} style={{ color: "#3b82f6", fontSize: 11 }}>Открыть →</a>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
-
-              {layers.routers &&
-                filteredRouters.map((router) => (
-                  <Marker key={router.id} position={[router.lat, router.lng]} icon={makeRouterIcon(router.status)}>
-                    <Popup>
-                      <div style={{ minWidth: 220 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}>
-                          <strong className="font-mono-data">{router.id}</strong>
-                          <StatusBadge status={router.status} />
-                        </div>
-                        <div style={{ fontWeight: 600, marginTop: 4 }}>{router.model}</div>
-                        <div style={{ color: "#888", fontSize: 11 }}>{router.address}</div>
-                        <div style={{ marginTop: 6, fontSize: 11 }}>
-                          <div>IP: <span className="font-mono-data">{router.ip}</span></div>
-                          <div>Wi-Fi клиентов: {router.clientsConnected}</div>
-                          <div>CPU: {router.cpu}% · RAM: {router.ram}%</div>
-                          <div>↓{router.trafficIn} / ↑{router.trafficOut} Мбит/с</div>
-                        </div>
-                        <a href={`/routers/${router.id}`} style={{ color: "#a855f7", fontSize: 11 }}>Открыть роутер →</a>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
-            </MapContainer>
-          )}
+          <div ref={containerRef} style={{ width: "100%", height: "100%", background: "#0a0e14" }} />
         </div>
       </div>
 
       {showAddDevice && (
-        <div className="fixed inset-0 bg-black/60 z-[1000] flex items-center justify-center p-4" onClick={() => setShowAddDevice(false)}>
-          <div className="bg-card border border-border rounded-lg p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 bg-black/60 z-[1000] flex items-center justify-center p-4"
+          onClick={() => setShowAddDevice(false)}
+        >
+          <div
+            className="bg-card border border-border rounded-lg p-6 max-w-md w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Добавить устройство на карту</h3>
               <button onClick={() => setShowAddDevice(false)} className="text-muted-foreground hover:text-foreground">
@@ -391,21 +471,37 @@ export default function NetworkMap() {
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">IP-адрес</label>
-                <input className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data" placeholder="192.168.10.40" />
+                <input
+                  className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
+                  placeholder="192.168.10.40"
+                />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">Широта</label>
-                  <input className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data" placeholder="55.7558" />
+                  <input
+                    className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
+                    placeholder="55.7558"
+                  />
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">Долгота</label>
-                  <input className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data" placeholder="37.6173" />
+                  <input
+                    className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
+                    placeholder="37.6173"
+                  />
                 </div>
               </div>
               <div className="flex gap-2 pt-2">
-                <button className="flex-1 h-9 bg-primary text-primary-foreground rounded font-medium text-sm">Добавить</button>
-                <button onClick={() => setShowAddDevice(false)} className="h-9 px-4 bg-secondary border border-border rounded text-sm">Отмена</button>
+                <button className="flex-1 h-9 bg-primary text-primary-foreground rounded font-medium text-sm">
+                  Добавить
+                </button>
+                <button
+                  onClick={() => setShowAddDevice(false)}
+                  className="h-9 px-4 bg-secondary border border-border rounded text-sm"
+                >
+                  Отмена
+                </button>
               </div>
             </div>
           </div>
