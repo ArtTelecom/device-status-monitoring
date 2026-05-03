@@ -7,6 +7,7 @@ Returns: HTTP-ответ с реальными метриками роутера
 import json
 import os
 import socket
+import ssl
 import hashlib
 from typing import Any
 
@@ -197,20 +198,30 @@ def handler(event: dict, context) -> dict:
             }, ensure_ascii=False),
         }
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(15.0)
+    use_tls = port == 8729 or os.environ.get('MIKROTIK_USE_TLS', '').lower() == 'true'
+
+    def make_socket():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(15.0)
+        s.connect((host, port))
+        if use_tls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_ciphers('DEFAULT:@SECLEVEL=0')
+            s = ctx.wrap_socket(s, server_hostname=host)
+        return s
+
+    sock = make_socket()
 
     try:
-        sock.connect((host, port))
 
         # Сначала пробуем новый login (RouterOS 6.43+)
         ok, msg = login_v6(sock, user, password)
         if not ok and 'invalid' in msg.lower():
             # На старых системах используем legacy
             sock.close()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(15.0)
-            sock.connect((host, port))
+            sock = make_socket()
             ok, msg = login_legacy(sock, user, password)
 
         if not ok:
