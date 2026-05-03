@@ -16,6 +16,12 @@ import { fetchMikrotik, fmtBytes, fmtBytesExact, fmtBps, parseUptimeFull, Mikrot
 
 const REAL_PHOTO = "https://cdn.poehali.dev/projects/4e28f997-118c-46af-9ba3-05afe46c8699/files/63330f23-43fd-46d3-89b1-914eaa853751.jpg";
 
+// Физическая раскладка трафика на R4:
+// ВХОДЯЩИЙ (от провайдеров) = rx_bytes на ether1 + ether3
+// ИСХОДЯЩИЙ (к абонентам)    = tx_bytes на ether2 + ether7
+const UPLINK_INTERFACES = ["ether1", "ether3"];
+const DOWNLINK_INTERFACES = ["ether2", "ether7"];
+
 function MetricRing({
   value,
   label,
@@ -78,10 +84,8 @@ function PortRow({
   const max = 1_000_000_000;
   const inPct = Math.min(100, (speedIn / max) * 100);
   const outPct = Math.min(100, (speedOut / max) * 100);
-  const isUplink =
-    iface.comment?.toLowerCase().includes("uplink") ||
-    iface.comment?.toLowerCase().includes("rt-") ||
-    iface.name.toLowerCase().startsWith("ether1");
+  const isUplink = UPLINK_INTERFACES.includes(iface.name);
+  const isDownlink = DOWNLINK_INTERFACES.includes(iface.name);
 
   return (
     <div className="grid grid-cols-12 gap-3 items-center py-2 px-3 hover:bg-secondary/40 rounded text-xs border-b border-border/50">
@@ -106,7 +110,10 @@ function PortRow({
 
       <div className="col-span-3 truncate text-muted-foreground">
         {isUplink && (
-          <span className="text-[9px] px-1 py-0.5 mr-1 rounded bg-primary/15 text-primary">UP</span>
+          <span className="text-[9px] px-1 py-0.5 mr-1 rounded bg-blue-500/20 text-blue-400 font-semibold">↓ ВХОД</span>
+        )}
+        {isDownlink && (
+          <span className="text-[9px] px-1 py-0.5 mr-1 rounded bg-purple-500/20 text-purple-400 font-semibold">↑ ВЫХОД</span>
         )}
         {iface.comment || "—"}
       </div>
@@ -184,17 +191,21 @@ export default function RealMikrotikCard() {
         const dt = (now - prevSnapshot.current.ts) / 1000;
         if (dt > 0) {
           const speeds: Record<string, { in: number; out: number }> = {};
-          let totalIn = 0;
-          let totalOut = 0;
+          let totalUplinkIn = 0;
+          let totalDownlinkOut = 0;
           json.interfaces.list.forEach((cur) => {
             const prev = prevSnapshot.current.data!.interfaces.list.find((p) => p.name === cur.name);
             if (prev) {
               const inBps = Math.max(0, ((cur.rx_bytes - prev.rx_bytes) * 8) / dt);
               const outBps = Math.max(0, ((cur.tx_bytes - prev.tx_bytes) * 8) / dt);
               speeds[cur.name] = { in: inBps, out: outBps };
-              if (cur.running) {
-                totalIn += inBps;
-                totalOut += outBps;
+              // Входящий — это rx на uplink-портах
+              if (UPLINK_INTERFACES.includes(cur.name)) {
+                totalUplinkIn += inBps;
+              }
+              // Исходящий — это tx на downlink-портах
+              if (DOWNLINK_INTERFACES.includes(cur.name)) {
+                totalDownlinkOut += outBps;
               }
             }
           });
@@ -203,8 +214,8 @@ export default function RealMikrotikCard() {
             ...h.slice(-29),
             {
               time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              in: Number((totalIn / 1_000_000).toFixed(3)),
-              out: Number((totalOut / 1_000_000).toFixed(3)),
+              in: Number((totalUplinkIn / 1_000_000).toFixed(3)),
+              out: Number((totalDownlinkOut / 1_000_000).toFixed(3)),
             },
           ]);
         }
@@ -250,12 +261,16 @@ export default function RealMikrotikCard() {
     );
   }
 
-  const totalInBps = Object.values(portSpeeds).reduce((s, p) => s + p.in, 0);
-  const totalOutBps = Object.values(portSpeeds).reduce((s, p) => s + p.out, 0);
+  // Скорость: входящий = rx на ether1+ether3, исходящий = tx на ether2+ether7
+  const uplinkIfaces = data.interfaces.list.filter((p) => UPLINK_INTERFACES.includes(p.name));
+  const downlinkIfaces = data.interfaces.list.filter((p) => DOWNLINK_INTERFACES.includes(p.name));
+  const totalInBps = uplinkIfaces.reduce((s, p) => s + (portSpeeds[p.name]?.in ?? 0), 0);
+  const totalOutBps = downlinkIfaces.reduce((s, p) => s + (portSpeeds[p.name]?.out ?? 0), 0);
   const portsUp = data.interfaces.running;
   const totalErrors = data.interfaces.list.reduce((s, p) => s + p.rx_errors + p.tx_errors, 0);
-  const totalIn = data.interfaces.list.reduce((s, p) => s + p.rx_bytes, 0);
-  const totalOut = data.interfaces.list.reduce((s, p) => s + p.tx_bytes, 0);
+  // Накопленный трафик: rx с uplink + tx с downlink
+  const totalIn = uplinkIfaces.reduce((s, p) => s + p.rx_bytes, 0);
+  const totalOut = downlinkIfaces.reduce((s, p) => s + p.tx_bytes, 0);
   const totalPackets = data.interfaces.list.reduce((s, p) => s + p.rx_packets + p.tx_packets, 0);
   const uptime = parseUptimeFull(data.system.uptime);
   const tempC = parseFloat(data.health.temperature || "0");
@@ -397,7 +412,7 @@ export default function RealMikrotikCard() {
                 Σ скачано: <span className="font-mono-data">{fmtBytes(totalIn, 3)}</span>
               </div>
               <div className="text-[9px] text-blue-300/50 font-mono-data mt-0.5">
-                {fmtBytesExact(totalIn)}
+                rx({UPLINK_INTERFACES.join("+")}) · {fmtBytesExact(totalIn)}
               </div>
               <div className="absolute right-2 top-2 opacity-20">
                 <Icon name="Download" size={48} className="text-blue-400" />
@@ -423,7 +438,7 @@ export default function RealMikrotikCard() {
                 Σ отдано: <span className="font-mono-data">{fmtBytes(totalOut, 3)}</span>
               </div>
               <div className="text-[9px] text-purple-300/50 font-mono-data mt-0.5">
-                {fmtBytesExact(totalOut)} · {portsUp}/{data.interfaces.count}
+                tx({DOWNLINK_INTERFACES.join("+")}) · {fmtBytesExact(totalOut)}
               </div>
               <div className="absolute right-2 top-2 opacity-20">
                 <Icon name="Upload" size={48} className="text-purple-400" />
