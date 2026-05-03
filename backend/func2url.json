@@ -1,4 +1,5 @@
 {
+  "check-host": "https://functions.poehali.dev/00a68678-6a41-44fb-823b-88239ce27fb7",
   "poll-mikrotik": "https://functions.poehali.dev/c20cd6ca-4503-422c-b86d-9629d3944fe1",
   "onu-poll": "https://functions.poehali.dev/86548b0d-d3e0-43fb-ae33-103f945e7664"
 }

@@ -1,0 +1,21 @@
+{
+  "tests": [
+    {
+      "name": "Проверка хоста по умолчанию",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "host": "string",
+        "summary": "object"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "OPTIONS CORS",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    }
+  ]
+}
