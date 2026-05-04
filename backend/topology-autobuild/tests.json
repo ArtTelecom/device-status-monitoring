@@ -1,0 +1,14 @@
+{
+  "tests": [
+    {"name": "OPTIONS", "method": "OPTIONS", "path": "/", "expectedStatus": 200},
+    {
+      "name": "POST autobuild",
+      "method": "POST",
+      "path": "/",
+      "body": {"clear": false},
+      "expectedStatus": 200,
+      "expectedBody": {"success": true},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

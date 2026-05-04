@@ -237,6 +237,32 @@ def handler(event: dict, context) -> dict:
                 mem_pct = int((mem_used * 100) / mem_total) if mem_total > 0 else 0
                 insert_metric(cur, did_i, cpu, mem_pct, ping_rtt, ping_loss, tin, tout)
 
+                neighbors = d.get('neighbors') or []
+                if isinstance(neighbors, list) and neighbors:
+                    cur.execute(f"DELETE FROM lldp_neighbors WHERE device_id = {did_i}")
+                    for n in neighbors:
+                        local_idx = safe_int(n.get('local_if_index'))
+                        local_name = esc(n.get('local_if_name', ''))
+                        rch = esc(str(n.get('remote_chassis_id', '')).lower())
+                        rport = esc(n.get('remote_port_id', ''))
+                        rdescr = esc(n.get('remote_port_descr', ''))
+                        rsys = esc(n.get('remote_sys_name', ''))
+                        rip = esc(n.get('remote_mgmt_ip', ''))
+                        proto = esc(n.get('protocol', 'lldp'))
+                        cur.execute(
+                            f"INSERT INTO lldp_neighbors (device_id, local_if_index, local_if_name, "
+                            f"remote_chassis_id, remote_port_id, remote_port_descr, remote_sys_name, "
+                            f"remote_mgmt_ip, protocol) VALUES "
+                            f"({did_i}, {local_idx}, '{local_name}', '{rch}', '{rport}', '{rdescr}', "
+                            f"'{rsys}', '{rip}', '{proto}') "
+                            f"ON CONFLICT (device_id, local_if_index, remote_chassis_id, remote_port_id) "
+                            f"DO UPDATE SET ts = CURRENT_TIMESTAMP, "
+                            f"local_if_name = EXCLUDED.local_if_name, "
+                            f"remote_port_descr = EXCLUDED.remote_port_descr, "
+                            f"remote_sys_name = EXCLUDED.remote_sys_name, "
+                            f"remote_mgmt_ip = EXCLUDED.remote_mgmt_ip"
+                        )
+
             cur.execute("DELETE FROM discovered_metrics WHERE ts < NOW() - INTERVAL '24 hours'")
             return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'inserted': inserted, 'updated': updated})}
 
@@ -245,6 +271,7 @@ def handler(event: dict, context) -> dict:
             if params.get('all') in ('1', 'true', 'yes'):
                 cur.execute("DELETE FROM interface_counters")
                 cur.execute("DELETE FROM discovered_metrics")
+                cur.execute("DELETE FROM lldp_neighbors")
                 cur.execute("DELETE FROM discovered_devices")
                 return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'deleted_all': True})}
             did = params.get('id')
@@ -256,6 +283,7 @@ def handler(event: dict, context) -> dict:
                 return {'statusCode': 400, 'headers': cors_headers(), 'body': json.dumps({'success': False, 'message': 'id должен быть числом'})}
             cur.execute(f"DELETE FROM interface_counters WHERE device_id = {did_i}")
             cur.execute(f"DELETE FROM discovered_metrics WHERE device_id = {did_i}")
+            cur.execute(f"DELETE FROM lldp_neighbors WHERE device_id = {did_i}")
             cur.execute(f"DELETE FROM discovered_devices WHERE id = {did_i}")
             return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'deleted': did_i})}
 

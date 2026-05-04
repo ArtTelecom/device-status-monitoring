@@ -7,6 +7,7 @@ const DEVICES_URL = "https://functions.poehali.dev/f7c8b99c-b2f6-45f1-b756-2afe7
 const LINKS_URL = "https://functions.poehali.dev/5d8489ec-523b-4377-9fc9-376a1506440d";
 const TRAFFIC_URL = "https://functions.poehali.dev/1687d84b-471e-4ed5-8f23-1ee841698a9c";
 const DISCOVERED_URL = "https://functions.poehali.dev/abad93d7-09ca-427b-aa2a-54953ec499b8";
+const AUTOBUILD_URL = "https://functions.poehali.dev/7a43803f-93f5-4e5e-9047-f39101e88322";
 
 type DevType = "olt" | "onu" | "router" | "server" | "switch" | "other";
 
@@ -357,6 +358,33 @@ export default function Topology() {
     }
   };
 
+  const [autobuilding, setAutobuilding] = useState(false);
+  const autoBuild = async (clear: boolean) => {
+    if (clear && !confirm("Удалить существующие связи и построить заново из LLDP?")) return;
+    setAutobuilding(true);
+    try {
+      const r = await fetch(AUTOBUILD_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clear }),
+      });
+      const j = await r.json();
+      if (j.success) {
+        toast.success(
+          `Построено: ${j.created_links} связей, ${j.created_devices} устройств. ` +
+            `Соседей всего: ${j.total_neighbors}, не сопоставлено: ${j.unmatched_neighbors}`
+        );
+        await load();
+      } else {
+        toast.error(j.message || "Ошибка авто-построения");
+      }
+    } catch {
+      toast.error("Ошибка запроса");
+    } finally {
+      setAutobuilding(false);
+    }
+  };
+
   const deleteLink = async (id: number) => {
     const r = await fetch(`${LINKS_URL}?id=${id}`, { method: "DELETE" });
     const j = await r.json();
@@ -427,6 +455,24 @@ export default function Topology() {
             >
               <Icon name="Spline" size={14} />
               {tool === "link" ? (linkFrom !== null ? "Выбери второе" : "Выбери первое") : "Связь"}
+            </button>
+            <button
+              onClick={() => autoBuild(false)}
+              disabled={autobuilding}
+              className="h-9 px-3 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-sm font-medium flex items-center gap-2 hover:bg-emerald-500/25 disabled:opacity-50"
+              title="Построить топологию из LLDP-соседей. Объединяет с существующей."
+            >
+              <Icon name={autobuilding ? "Loader2" : "Sparkles"} size={14} className={autobuilding ? "animate-spin" : ""} />
+              {autobuilding ? "Строю..." : "Авто (LLDP)"}
+            </button>
+            <button
+              onClick={() => autoBuild(true)}
+              disabled={autobuilding}
+              className="h-9 px-3 rounded-md bg-secondary border border-border text-sm font-medium flex items-center gap-2 hover:bg-accent disabled:opacity-50"
+              title="Очистить связи и построить заново"
+            >
+              <Icon name="RotateCw" size={14} />
+              Перестроить
             </button>
             <button
               onClick={deleteAll}

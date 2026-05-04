@@ -54,6 +54,8 @@ snmp_enabled = true
 snmp_community = public
 # Опрашивать таблицу интерфейсов (трафик, скорость, статус)
 snmp_interfaces = true
+# Опрашивать LLDP-соседей (для авто-построения топологии)
+snmp_lldp = true
 # Считать дроп пакетов через мини-серию ping (4 пакета)
 deep_ping = true
 """
@@ -276,6 +278,99 @@ def snmp_interfaces(ip, community):
     return out
 
 
+def _hex_to_mac(s):
+    """Преобразует hex-строку SNMP в MAC."""
+    s = s.replace(" ", "").replace("0x", "").replace(":", "").replace("-", "")
+    if len(s) == 12 and all(c in "0123456789abcdefABCDEF" for c in s):
+        return ":".join(s[i:i+2].lower() for i in range(0, 12, 2))
+    return s.lower()
+
+
+def _hex_to_ip(s):
+    """SNMP-вывод IP в hex (4 байта) -> dotted."""
+    s = s.replace(" ", "").replace("0x", "")
+    if len(s) == 8 and all(c in "0123456789abcdefABCDEF" for c in s):
+        try:
+            return ".".join(str(int(s[i:i+2], 16)) for i in range(0, 8, 2))
+        except Exception:
+            return ""
+    return s if "." in s else ""
+
+
+def snmp_lldp(ip, community):
+    """Собирает таблицу LLDP-соседей."""
+    if not SNMP_AVAILABLE:
+        return []
+    # lldpRemTable: индекс = lldpRemTimeMark.lldpRemLocalPortNum.lldpRemIndex
+    chassis = snmp_walk(ip, community, "1.0.8802.1.1.2.1.4.1.1.5")  # lldpRemChassisId
+    port_id = snmp_walk(ip, community, "1.0.8802.1.1.2.1.4.1.1.7")  # lldpRemPortId
+    port_descr = dict(snmp_walk(ip, community, "1.0.8802.1.1.2.1.4.1.1.8"))
+    sys_name = dict(snmp_walk(ip, community, "1.0.8802.1.1.2.1.4.1.1.9"))
+    # lldpRemManAddrTable: индекс начинается с timemark.localport.remindex.addrtype.addrlen.addr
+    mgmt_walk = snmp_walk(ip, community, "1.0.8802.1.1.2.1.4.2.1.3", max_rows=256)  # lldpRemManAddrIfId
+    # Имена локальных интерфейсов
+    if_names = dict(snmp_walk(ip, community, "1.3.6.1.2.1.31.1.1.1.1"))
+    if not if_names:
+        if_names = dict(snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.2"))
+
+    # Соберём mgmt IP по (timemark.localport.remindex)
+    mgmt_by_key = {}
+    for full_idx, _ifid in mgmt_walk:
+        parts = full_idx.split(".")
+        if len(parts) < 6:
+            continue
+        # parts: timemark, localport, remindex, addrtype, addrlen, ip-bytes...
+        try:
+            addr_type = int(parts[3])
+            addr_len = int(parts[4])
+        except ValueError:
+            continue
+        if addr_type != 1 or addr_len != 4:  # ipv4
+            continue
+        ip_parts = parts[5:5 + addr_len]
+        if len(ip_parts) != 4:
+            continue
+        try:
+            ip_str = ".".join(str(int(x)) for x in ip_parts)
+        except ValueError:
+            continue
+        key = ".".join(parts[:3])
+        mgmt_by_key[key] = ip_str
+
+    out = []
+    pid_map = dict(port_id)
+    for full_idx, ch_raw in chassis:
+        # full_idx: timemark.localport.remindex
+        parts = full_idx.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            local_port = int(parts[1])
+        except ValueError:
+            local_port = 0
+        chassis_val = ch_raw
+        if "0x" in ch_raw or all(c in "0123456789abcdefABCDEF " for c in ch_raw.strip()):
+            mac = _hex_to_mac(ch_raw)
+            if len(mac) == 17:
+                chassis_val = mac
+        rport = pid_map.get(full_idx, "")
+        if "0x" in rport or (rport and all(c in "0123456789abcdefABCDEF " for c in rport.strip())):
+            maybe_mac = _hex_to_mac(rport)
+            if len(maybe_mac) == 17:
+                rport = maybe_mac
+        out.append({
+            "local_if_index": local_port,
+            "local_if_name": if_names.get(str(local_port), ""),
+            "remote_chassis_id": chassis_val.lower(),
+            "remote_port_id": rport,
+            "remote_port_descr": port_descr.get(full_idx, ""),
+            "remote_sys_name": sys_name.get(full_idx, ""),
+            "remote_mgmt_ip": mgmt_by_key.get(full_idx, ""),
+            "protocol": "lldp",
+        })
+    return out
+
+
 def snmp_cpu_mem(ip, community):
     """CPU и память — пробуем универсальные OID + специфичные."""
     cpu = 0
@@ -394,6 +489,7 @@ def discover(cfg):
     ping_timeout = cfg.get("ping_timeout", "600")
     snmp_enabled = cfg.get("snmp_enabled", "true").lower() == "true"
     snmp_ifaces = cfg.get("snmp_interfaces", "true").lower() == "true"
+    snmp_lldp_on = cfg.get("snmp_lldp", "true").lower() == "true"
     do_deep = cfg.get("deep_ping", "true").lower() == "true"
     community = cfg.get("snmp_community", "public")
 
@@ -409,6 +505,7 @@ def discover(cfg):
         sys_descr, sys_name, uptime, contact, location = ("", "", "", "", "")
         cpu, mem_used, mem_total = 0, 0, 0
         ifaces = []
+        neighbors = []
         if snmp_enabled:
             sys_descr, sys_name, uptime, contact, location = snmp_probe(ip, community)
             if sys_name and not hostname:
@@ -417,6 +514,8 @@ def discover(cfg):
                 cpu, mem_used, mem_total = snmp_cpu_mem(ip, community)
                 if snmp_ifaces:
                     ifaces = snmp_interfaces(ip, community)
+                if snmp_lldp_on:
+                    neighbors = snmp_lldp(ip, community)
         loss, rtt = (0, 0)
         if do_deep:
             loss, rtt = deep_ping(ip, count=3, timeout_ms=int(ping_timeout))
@@ -433,12 +532,14 @@ def discover(cfg):
             "cpu_load": cpu, "mem_used": mem_used, "mem_total": mem_total,
             "ping_loss": loss, "ping_rtt_ms": rtt,
             "interfaces": ifaces,
+            "neighbors": neighbors,
         })
         extra = []
         if cpu: extra.append(f"CPU {cpu}%")
         if rtt: extra.append(f"RTT {rtt}ms")
         if loss: extra.append(f"loss {loss}%")
         if ifaces: extra.append(f"if:{len(ifaces)}")
+        if neighbors: extra.append(f"lldp:{len(neighbors)}")
         extras = " · ".join(extra)
         print(f"  {ip:15s} {mac or '-':17s} {(hostname or vendor or '-')[:25]:25s} {extras}")
     return devices
@@ -556,7 +657,22 @@ ping_timeout   — таймаут одного ping в мс (600)
 snmp_enabled   — опрашивать SNMP (true)
 snmp_community — SNMP community (обычно public)
 snmp_interfaces — собирать таблицу интерфейсов (true)
-deep_ping      — серия из 3 ping для измерения потерь и RTT (true)
+snmp_lldp       — собирать LLDP-соседей для авто-построения топологии (true)
+deep_ping       — серия из 3 ping для измерения потерь и RTT (true)
+
+
+АВТО-ПОСТРОЕНИЕ ТОПОЛОГИИ (LLDP)
+================================
+Если на сетевом оборудовании включён LLDP, агент сам соберёт информацию
+"кто к кому подключён, через какой порт".
+
+На сайте: раздел "Топология" -> кнопка "Авто (LLDP)".
+   Сайт сам создаст недостающие устройства и нарисует все связи
+   с правильными портами и включённой живой пульсацией.
+
+Для MikroTik: /ip neighbor discovery-settings set discover-interface-list=all
+Для Eltex/Cisco: lldp run (глобально)
+Для Huawei: lldp enable (глобально)
 
 
 СБОРКА В EXE (без Python)
