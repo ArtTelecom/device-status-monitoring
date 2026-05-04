@@ -71,10 +71,10 @@ export default function NetworkMap() {
       zoom: 11,
       zoomControl: true,
       preferCanvas: true,
+      attributionControl: false,
     });
 
     const tile = L.tileLayer(TILE_URLS.dark, {
-      attribution: "&copy; OpenStreetMap, &copy; CartoDB",
       maxZoom: 19,
     }).addTo(map);
 
