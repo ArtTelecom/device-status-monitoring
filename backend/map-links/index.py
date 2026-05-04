@@ -47,7 +47,9 @@ def handler(event: dict, context) -> dict:
         if method == 'GET':
             cur.execute(
                 "SELECT id, source_id, target_id, source_port, target_port, "
-                "bandwidth_mbps, current_mbps, color, waypoints, label, created_at "
+                "bandwidth_mbps, current_mbps, color, waypoints, label, created_at, "
+                "COALESCE(source_discovered_id,0), COALESCE(target_discovered_id,0), "
+                "COALESCE(source_if_index,0), COALESCE(target_if_index,0), COALESCE(auto_traffic, FALSE) "
                 "FROM map_links ORDER BY id"
             )
             items = []
@@ -64,6 +66,11 @@ def handler(event: dict, context) -> dict:
                     'waypoints': parse_waypoints(r[8]),
                     'label': r[9] or '',
                     'created_at': r[10].isoformat() if r[10] else None,
+                    'source_discovered_id': r[11],
+                    'target_discovered_id': r[12],
+                    'source_if_index': r[13],
+                    'target_if_index': r[14],
+                    'auto_traffic': bool(r[15]),
                 })
             return {
                 'statusCode': 200,
@@ -152,6 +159,16 @@ def handler(event: dict, context) -> dict:
                 wps = body['waypoints']
                 wps_str = esc(json.dumps(wps if isinstance(wps, list) else []))
                 sets.append(f"waypoints = '{wps_str}'")
+            if 'source_discovered_id' in body:
+                sets.append(f"source_discovered_id = {int(body['source_discovered_id'] or 0)}")
+            if 'target_discovered_id' in body:
+                sets.append(f"target_discovered_id = {int(body['target_discovered_id'] or 0)}")
+            if 'source_if_index' in body:
+                sets.append(f"source_if_index = {int(body['source_if_index'] or 0)}")
+            if 'target_if_index' in body:
+                sets.append(f"target_if_index = {int(body['target_if_index'] or 0)}")
+            if 'auto_traffic' in body:
+                sets.append(f"auto_traffic = {'TRUE' if body['auto_traffic'] else 'FALSE'}")
             if not sets:
                 return {
                     'statusCode': 400,

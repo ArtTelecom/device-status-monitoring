@@ -21,6 +21,36 @@ interface Discovered {
   first_seen: string | null;
   last_seen: string | null;
   on_map: boolean;
+  cpu_load?: number;
+  mem_used?: number;
+  mem_total?: number;
+  ping_loss?: number;
+  ping_rtt_ms?: number;
+  contact?: string;
+  location?: string;
+}
+
+interface IfRow {
+  if_index: number;
+  if_name: string;
+  in_octets: number;
+  out_octets: number;
+  in_bps: number;
+  out_bps: number;
+  speed_mbps: number;
+  oper_status: string;
+}
+
+interface DeviceDetail extends Discovered {
+  interfaces: IfRow[];
+  history: { ts: number; cpu: number; mem: number; rtt: number; in_bps: number; out_bps: number }[];
+}
+
+function fmtBps(bps: number): string {
+  if (!bps) return "0";
+  if (bps > 1_000_000) return (bps / 1_000_000).toFixed(2) + " Мбит/с";
+  if (bps > 1_000) return (bps / 1_000).toFixed(1) + " Кбит/с";
+  return bps + " бит/с";
 }
 
 function timeAgo(iso: string | null) {
@@ -37,6 +67,19 @@ export default function Discovered() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [downloading, setDownloading] = useState(false);
+  const [detail, setDetail] = useState<DeviceDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const openDetail = async (id: number) => {
+    setDetailLoading(true);
+    try {
+      const r = await fetch(`${DISCOVERED_URL}?id=${id}`);
+      const j = await r.json();
+      if (j.success) setDetail(j.item);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
 
   const handleDownloadAgent = async () => {
     setDownloading(true);
@@ -208,6 +251,8 @@ export default function Discovered() {
                   <th className="text-left font-medium py-2 px-2">Hostname</th>
                   <th className="text-left font-medium py-2 px-2">Vendor</th>
                   <th className="text-left font-medium py-2 px-2">Модель / Описание</th>
+                  <th className="text-left font-medium py-2 px-2">CPU</th>
+                  <th className="text-left font-medium py-2 px-2">RTT</th>
                   <th className="text-left font-medium py-2 px-2">Аптайм</th>
                   <th className="text-left font-medium py-2 px-2">Последний раз</th>
                   <th className="text-right font-medium py-2 px-2">Действия</th>
@@ -235,13 +280,27 @@ export default function Discovered() {
                     </td>
                     <td className="py-2 px-2">{d.hostname || "—"}</td>
                     <td className="py-2 px-2">{d.vendor || "—"}</td>
-                    <td className="py-2 px-2 max-w-xs truncate" title={d.sys_descr || d.model}>
+                    <td className="py-2 px-2 max-w-xs truncate cursor-pointer hover:text-primary" title="Подробности" onClick={() => openDetail(d.id)}>
                       {d.model || d.sys_descr || "—"}
+                    </td>
+                    <td className="py-2 px-2 text-xs font-mono-data" style={{ color: (d.cpu_load || 0) > 80 ? "hsl(0 72% 60%)" : (d.cpu_load || 0) > 50 ? "hsl(38 92% 60%)" : "inherit" }}>
+                      {d.cpu_load ? `${d.cpu_load}%` : "—"}
+                    </td>
+                    <td className="py-2 px-2 text-xs font-mono-data text-muted-foreground">
+                      {d.ping_rtt_ms ? `${d.ping_rtt_ms}ms` : "—"}
+                      {d.ping_loss ? <span className="ml-1 text-destructive">·{d.ping_loss}%</span> : null}
                     </td>
                     <td className="py-2 px-2 text-xs text-muted-foreground">{d.uptime || "—"}</td>
                     <td className="py-2 px-2 text-xs text-muted-foreground">{timeAgo(d.last_seen)}</td>
                     <td className="py-2 px-2 text-right">
                       <div className="flex justify-end gap-1">
+                        <button
+                          onClick={() => openDetail(d.id)}
+                          className="text-xs px-2 py-1 rounded bg-secondary border border-border hover:bg-accent flex items-center gap-1"
+                          title="Подробности"
+                        >
+                          <Icon name="Eye" size={11} />
+                        </button>
                         {d.on_map ? (
                           <span className="text-xs px-2 py-1 rounded bg-primary/15 text-primary">
                             <Icon name="MapPin" size={11} className="inline mr-1" />
@@ -286,9 +345,216 @@ export default function Discovered() {
           <li>Двойной клик на <code className="font-mono-data text-foreground">run.bat</code> — создастся <code className="font-mono-data text-foreground">config.ini</code>.</li>
           <li>Открой <code className="font-mono-data text-foreground">config.ini</code> в Блокноте и впиши: <code className="font-mono-data text-foreground">token</code> (значение секрета AGENT_TOKEN с сайта) и <code className="font-mono-data text-foreground">subnet</code> (свою подсеть, например <code className="font-mono-data text-foreground">192.168.88.0/24</code>).</li>
           <li>Снова двойной клик на <code className="font-mono-data text-foreground">run.bat</code>. Окно консоли оставь открытым — каждые 60 сек найденное оборудование появится в этой таблице.</li>
+          <li><b className="text-foreground">Несколько подсетей:</b> в <code className="font-mono-data text-foreground">subnet</code> перечисли через запятую: <code className="font-mono-data text-foreground">192.168.1.0/24, 192.168.88.0/24, 10.0.0.0/24</code>.</li>
           <li>(Опционально) Запусти <code className="font-mono-data text-foreground">build_exe.bat</code>, чтобы получить один <code className="font-mono-data text-foreground">scanner.exe</code> без установки Python.</li>
         </ol>
       </div>
+
+      {(detail || detailLoading) && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setDetail(null)}
+        >
+          <div
+            className="bg-card border border-border rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {detailLoading && !detail ? (
+              <div className="p-12 text-center text-muted-foreground">Загрузка...</div>
+            ) : detail ? (
+              <>
+                <div className="sticky top-0 bg-card border-b border-border p-4 flex items-center justify-between">
+                  <div>
+                    <div className="text-lg font-semibold flex items-center gap-2">
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{
+                          background:
+                            detail.status === "online"
+                              ? "hsl(142 76% 44%)"
+                              : detail.status === "warning"
+                                ? "hsl(38 92% 50%)"
+                                : "hsl(0 72% 51%)",
+                        }}
+                      />
+                      {detail.hostname || detail.ip}
+                    </div>
+                    <div className="text-xs text-muted-foreground font-mono-data">
+                      {detail.ip} · {detail.mac || "—"} · {detail.vendor || "—"}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setDetail(null)}
+                    className="w-8 h-8 rounded hover:bg-secondary flex items-center justify-center"
+                  >
+                    <Icon name="X" size={16} />
+                  </button>
+                </div>
+
+                <div className="p-4 space-y-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="bg-secondary/40 rounded-lg p-3 border border-border">
+                      <div className="text-[10px] text-muted-foreground uppercase">CPU</div>
+                      <div className="text-2xl font-mono-data mt-1">{detail.cpu_load || 0}%</div>
+                      <div className="h-1.5 bg-border rounded mt-2 overflow-hidden">
+                        <div
+                          className="h-full transition-all"
+                          style={{
+                            width: `${Math.min(100, detail.cpu_load || 0)}%`,
+                            background: (detail.cpu_load || 0) > 80 ? "hsl(0 72% 51%)" : "hsl(142 76% 44%)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="bg-secondary/40 rounded-lg p-3 border border-border">
+                      <div className="text-[10px] text-muted-foreground uppercase">Память</div>
+                      <div className="text-2xl font-mono-data mt-1">
+                        {detail.mem_total
+                          ? `${Math.round(((detail.mem_used || 0) / detail.mem_total) * 100)}%`
+                          : "—"}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-1">
+                        {detail.mem_total
+                          ? `${Math.round((detail.mem_used || 0) / 1024)} / ${Math.round(detail.mem_total / 1024)} КБ`
+                          : "не доступно"}
+                      </div>
+                    </div>
+                    <div className="bg-secondary/40 rounded-lg p-3 border border-border">
+                      <div className="text-[10px] text-muted-foreground uppercase">Ping RTT</div>
+                      <div className="text-2xl font-mono-data mt-1">{detail.ping_rtt_ms || 0} <span className="text-sm text-muted-foreground">ms</span></div>
+                      <div className="text-[10px] text-muted-foreground mt-1">потери: {detail.ping_loss || 0}%</div>
+                    </div>
+                    <div className="bg-secondary/40 rounded-lg p-3 border border-border">
+                      <div className="text-[10px] text-muted-foreground uppercase">Аптайм</div>
+                      <div className="text-base font-mono-data mt-1">{detail.uptime || "—"}</div>
+                    </div>
+                  </div>
+
+                  {(detail.contact || detail.location) && (
+                    <div className="grid grid-cols-2 gap-3">
+                      {detail.location && (
+                        <div className="bg-secondary/40 rounded p-2 border border-border text-xs">
+                          <span className="text-muted-foreground">Расположение: </span>
+                          {detail.location}
+                        </div>
+                      )}
+                      {detail.contact && (
+                        <div className="bg-secondary/40 rounded p-2 border border-border text-xs">
+                          <span className="text-muted-foreground">Контакт: </span>
+                          {detail.contact}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {detail.sys_descr && (
+                    <div>
+                      <div className="text-[10px] text-muted-foreground uppercase mb-1">Описание SNMP</div>
+                      <div className="text-xs bg-secondary/40 rounded p-2 border border-border font-mono-data whitespace-pre-wrap">
+                        {detail.sys_descr}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="text-xs uppercase text-muted-foreground font-semibold mb-2 flex items-center gap-2">
+                      <Icon name="Network" size={12} />
+                      Интерфейсы ({detail.interfaces.length})
+                    </div>
+                    {detail.interfaces.length === 0 ? (
+                      <div className="text-xs text-muted-foreground bg-secondary/30 rounded p-3 border border-border">
+                        SNMP-интерфейсы не получены. Включи на устройстве SNMP с community <code>public</code> или открой UDP/161.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto border border-border rounded">
+                        <table className="w-full text-xs">
+                          <thead className="bg-secondary/40 text-muted-foreground">
+                            <tr>
+                              <th className="text-left p-2">#</th>
+                              <th className="text-left p-2">Имя</th>
+                              <th className="text-left p-2">Статус</th>
+                              <th className="text-right p-2">Скорость</th>
+                              <th className="text-right p-2">IN</th>
+                              <th className="text-right p-2">OUT</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detail.interfaces.map((iface) => (
+                              <tr key={iface.if_index} className="border-t border-border/50">
+                                <td className="p-2 font-mono-data">{iface.if_index}</td>
+                                <td className="p-2 font-mono-data">{iface.if_name}</td>
+                                <td className="p-2">
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px]"
+                                    style={{
+                                      background:
+                                        iface.oper_status === "up"
+                                          ? "hsl(142 76% 44% / 0.2)"
+                                          : "hsl(0 72% 51% / 0.2)",
+                                      color:
+                                        iface.oper_status === "up"
+                                          ? "hsl(142 76% 60%)"
+                                          : "hsl(0 72% 60%)",
+                                    }}
+                                  >
+                                    {iface.oper_status}
+                                  </span>
+                                </td>
+                                <td className="p-2 text-right font-mono-data text-muted-foreground">
+                                  {iface.speed_mbps ? `${iface.speed_mbps} Мбит/с` : "—"}
+                                </td>
+                                <td className="p-2 text-right font-mono-data text-emerald-400">
+                                  {fmtBps(iface.in_bps)}
+                                </td>
+                                <td className="p-2 text-right font-mono-data text-blue-400">
+                                  {fmtBps(iface.out_bps)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {detail.history.length > 1 && (
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground font-semibold mb-2 flex items-center gap-2">
+                        <Icon name="Activity" size={12} />
+                        История трафика (последние {detail.history.length} замеров)
+                      </div>
+                      <div className="bg-secondary/30 rounded p-3 border border-border">
+                        <svg viewBox="0 0 600 120" className="w-full" preserveAspectRatio="none" style={{ height: 120 }}>
+                          {(() => {
+                            const maxBps = Math.max(...detail.history.map((h) => Math.max(h.in_bps, h.out_bps)), 1);
+                            const w = 600;
+                            const h = 120;
+                            const step = w / Math.max(1, detail.history.length - 1);
+                            const points = (key: "in_bps" | "out_bps") =>
+                              detail.history
+                                .map((p, i) => `${i * step},${h - (p[key] / maxBps) * h * 0.9}`)
+                                .join(" ");
+                            return (
+                              <>
+                                <polyline points={points("in_bps")} fill="none" stroke="hsl(142 76% 50%)" strokeWidth={1.5} />
+                                <polyline points={points("out_bps")} fill="none" stroke="hsl(217 91% 60%)" strokeWidth={1.5} />
+                              </>
+                            );
+                          })()}
+                        </svg>
+                        <div className="flex gap-4 text-[10px] text-muted-foreground mt-1">
+                          <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1" />IN</span>
+                          <span><span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1" />OUT</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

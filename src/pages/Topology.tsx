@@ -5,6 +5,8 @@ import PageHeader from "@/components/common/PageHeader";
 
 const DEVICES_URL = "https://functions.poehali.dev/f7c8b99c-b2f6-45f1-b756-2afe78cdc1d5";
 const LINKS_URL = "https://functions.poehali.dev/5d8489ec-523b-4377-9fc9-376a1506440d";
+const TRAFFIC_URL = "https://functions.poehali.dev/1687d84b-471e-4ed5-8f23-1ee841698a9c";
+const DISCOVERED_URL = "https://functions.poehali.dev/abad93d7-09ca-427b-aa2a-54953ec499b8";
 
 type DevType = "olt" | "onu" | "router" | "server" | "switch" | "other";
 
@@ -37,6 +39,24 @@ interface Link {
   color: string;
   waypoints: Waypoint[];
   label: string;
+  source_discovered_id?: number;
+  target_discovered_id?: number;
+  source_if_index?: number;
+  target_if_index?: number;
+  auto_traffic?: boolean;
+}
+
+interface DiscoveredLite {
+  id: number;
+  ip: string;
+  hostname: string;
+}
+
+interface IfLite {
+  if_index: number;
+  if_name: string;
+  speed_mbps: number;
+  oper_status: string;
 }
 
 const DEVICE_PRESETS: { type: DevType; label: string; icon: string; color: string }[] = [
@@ -89,6 +109,9 @@ export default function Topology() {
   const [pan, setPan] = useState<Waypoint>({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
   const [panStart, setPanStart] = useState<Waypoint>({ x: 0, y: 0 });
+  const [discoveredList, setDiscoveredList] = useState<DiscoveredLite[]>([]);
+  const [srcIfaces, setSrcIfaces] = useState<IfLite[]>([]);
+  const [tgtIfaces, setTgtIfaces] = useState<IfLite[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -111,7 +134,70 @@ export default function Topology() {
 
   useEffect(() => {
     load();
+    fetch(DISCOVERED_URL)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.success) setDiscoveredList((j.items || []).map((x: DiscoveredLite) => ({ id: x.id, ip: x.ip, hostname: x.hostname })));
+      })
+      .catch(() => {});
   }, [load]);
+
+  // Живая пульсация — каждые 5 секунд тянем актуальный трафик
+  useEffect(() => {
+    const tick = async () => {
+      try {
+        const r = await fetch(TRAFFIC_URL);
+        const j = await r.json();
+        if (j.success && j.items) {
+          setLinks((prev) =>
+            prev.map((l) => {
+              const t = j.items.find((x: { id: number; current_mbps: number; bandwidth_mbps: number }) => x.id === l.id);
+              return t ? { ...l, current_mbps: t.current_mbps, bandwidth_mbps: t.bandwidth_mbps || l.bandwidth_mbps } : l;
+            })
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Подгрузка интерфейсов выбранной линии
+  useEffect(() => {
+    const loadIfaces = async (did: number, setter: (v: IfLite[]) => void) => {
+      if (!did) {
+        setter([]);
+        return;
+      }
+      try {
+        const r = await fetch(`${DISCOVERED_URL}?id=${did}`);
+        const j = await r.json();
+        if (j.success && j.item) {
+          setter(
+            (j.item.interfaces || []).map((i: IfLite) => ({
+              if_index: i.if_index,
+              if_name: i.if_name,
+              speed_mbps: i.speed_mbps,
+              oper_status: i.oper_status,
+            }))
+          );
+        }
+      } catch {
+        setter([]);
+      }
+    };
+    const sel = links.find((l) => l.id === selectedLink);
+    if (sel) {
+      loadIfaces(sel.source_discovered_id || 0, setSrcIfaces);
+      loadIfaces(sel.target_discovered_id || 0, setTgtIfaces);
+    } else {
+      setSrcIfaces([]);
+      setTgtIfaces([]);
+    }
+  }, [selectedLink, links]);
 
   const screenToSvg = (clientX: number, clientY: number): Waypoint => {
     if (!svgRef.current) return { x: 0, y: 0 };
@@ -733,6 +819,95 @@ export default function Topology() {
                   placeholder="auto: 100/1000 Мбит"
                   className="w-full mt-1 h-8 px-2 bg-secondary border border-border rounded text-sm"
                 />
+              </div>
+
+              <div className="border-t border-border pt-3 mt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-semibold uppercase text-muted-foreground">
+                    Авто-трафик (живая пульсация)
+                  </label>
+                  <button
+                    onClick={() => updateLink(selLink.id, { auto_traffic: !selLink.auto_traffic })}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${selLink.auto_traffic ? "bg-emerald-500" : "bg-border"}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${selLink.auto_traffic ? "translate-x-5" : ""}`}
+                    />
+                  </button>
+                </div>
+
+                {selLink.auto_traffic && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Устройство A (источник)</label>
+                      <select
+                        value={selLink.source_discovered_id || 0}
+                        onChange={(e) => updateLink(selLink.id, { source_discovered_id: Number(e.target.value), source_if_index: 0 })}
+                        className="w-full mt-1 h-8 px-2 bg-secondary border border-border rounded text-xs"
+                      >
+                        <option value={0}>— не выбрано —</option>
+                        {discoveredList.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.hostname || d.ip} ({d.ip})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {srcIfaces.length > 0 && (
+                      <div>
+                        <label className="text-[10px] text-muted-foreground">Порт A</label>
+                        <select
+                          value={selLink.source_if_index || 0}
+                          onChange={(e) => updateLink(selLink.id, { source_if_index: Number(e.target.value) })}
+                          className="w-full mt-1 h-8 px-2 bg-secondary border border-border rounded text-xs font-mono-data"
+                        >
+                          <option value={0}>— выбери порт —</option>
+                          {srcIfaces.map((i) => (
+                            <option key={i.if_index} value={i.if_index}>
+                              {i.if_name} {i.speed_mbps ? `· ${i.speed_mbps} Мбит` : ""} · {i.oper_status}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Устройство B (приёмник, опц.)</label>
+                      <select
+                        value={selLink.target_discovered_id || 0}
+                        onChange={(e) => updateLink(selLink.id, { target_discovered_id: Number(e.target.value), target_if_index: 0 })}
+                        className="w-full mt-1 h-8 px-2 bg-secondary border border-border rounded text-xs"
+                      >
+                        <option value={0}>— не выбрано —</option>
+                        {discoveredList.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.hostname || d.ip} ({d.ip})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {tgtIfaces.length > 0 && (
+                      <div>
+                        <label className="text-[10px] text-muted-foreground">Порт B</label>
+                        <select
+                          value={selLink.target_if_index || 0}
+                          onChange={(e) => updateLink(selLink.id, { target_if_index: Number(e.target.value) })}
+                          className="w-full mt-1 h-8 px-2 bg-secondary border border-border rounded text-xs font-mono-data"
+                        >
+                          <option value={0}>— выбери порт —</option>
+                          {tgtIfaces.map((i) => (
+                            <option key={i.if_index} value={i.if_index}>
+                              {i.if_name} {i.speed_mbps ? `· ${i.speed_mbps} Мбит` : ""} · {i.oper_status}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div className="text-[10px] text-emerald-400 bg-emerald-500/10 rounded p-2 border border-emerald-500/30">
+                      <Icon name="Activity" size={10} className="inline mr-1" />
+                      Линия обновляется каждые 5 сек по реальным счётчикам SNMP интерфейса.
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="text-[10px] text-muted-foreground p-2 bg-secondary/40 rounded">
