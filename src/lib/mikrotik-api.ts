@@ -1,4 +1,36 @@
 export const MIKROTIK_API_URL = "https://functions.poehali.dev/0791debc-4b91-47c3-95aa-7a34a8b2e271";
+export const MIKROTIK_CLIENTS_URL = "https://functions.poehali.dev/b1b8dc44-fdff-4212-9f68-9aa1ed50a3c2";
+
+export interface MikrotikClient {
+  mac: string;
+  ip: string;
+  hostname: string;
+  server: string;
+  status: string;
+  last_seen: string;
+  dynamic: boolean;
+  blocked: boolean;
+  disabled: boolean;
+  expires_after: string;
+  comment: string;
+  source: "dhcp" | "arp";
+  interface: string;
+  reachable: boolean;
+}
+
+export interface MikrotikClientsResponse {
+  success: boolean;
+  total: number;
+  online: number;
+  bound: number;
+  clients: MikrotikClient[];
+  message?: string;
+}
+
+export async function fetchMikrotikClients(): Promise<MikrotikClientsResponse> {
+  const res = await fetch(MIKROTIK_CLIENTS_URL);
+  return res.json();
+}
 
 export interface MikrotikInterface {
   index: number;

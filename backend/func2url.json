@@ -1,4 +1,5 @@
 {
+  "mikrotik-clients": "https://functions.poehali.dev/b1b8dc44-fdff-4212-9f68-9aa1ed50a3c2",
   "mikrotik-stats": "https://functions.poehali.dev/9a94de1a-a395-4f8c-899e-4aba0fa7ac08",
   "mikrotik-api": "https://functions.poehali.dev/0791debc-4b91-47c3-95aa-7a34a8b2e271",
   "check-host": "https://functions.poehali.dev/00a68678-6a41-44fb-823b-88239ce27fb7",

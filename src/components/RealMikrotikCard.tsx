@@ -18,12 +18,14 @@ import { toast } from "sonner";
 import Icon from "@/components/ui/icon";
 import {
   fetchMikrotik,
+  fetchMikrotikClients,
   fmtBytes,
   fmtBytesExact,
   fmtBps,
   parseUptimeFull,
   MikrotikData,
   MikrotikInterface,
+  MikrotikClient,
 } from "@/lib/mikrotik-api";
 import {
   PortSettings,
@@ -469,13 +471,234 @@ function PeaksPanel({ peaks, ports }: { peaks: PeakRow[]; ports: PortSettings[] 
   );
 }
 
+function ClientsTab() {
+  const [clients, setClients] = useState<MikrotikClient[]>([]);
+  const [stats, setStats] = useState<{ total: number; online: number; bound: number }>({ total: 0, online: 0, bound: 0 });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "online" | "offline" | "blocked">("all");
+  const [search, setSearch] = useState("");
+  const [ifaceFilter, setIfaceFilter] = useState<string>("");
+  const [sortBy, setSortBy] = useState<"ip" | "hostname" | "interface" | "last_seen">("ip");
+
+  const load = async () => {
+    try {
+      const j = await fetchMikrotikClients();
+      if (!j.success) {
+        setErr(j.message || "Ошибка");
+        setLoading(false);
+        return;
+      }
+      setClients(j.clients || []);
+      setStats({ total: j.total, online: j.online, bound: j.bound });
+      setErr(null);
+      setLoading(false);
+    } catch (e) {
+      setErr(String(e));
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const interfaces = useMemo(() => {
+    const set = new Set<string>();
+    clients.forEach((c) => c.interface && set.add(c.interface));
+    return Array.from(set).sort();
+  }, [clients]);
+
+  const filtered = useMemo(() => {
+    let res = clients;
+    if (filter === "online") res = res.filter((c) => c.reachable);
+    if (filter === "offline") res = res.filter((c) => !c.reachable);
+    if (filter === "blocked") res = res.filter((c) => c.blocked || c.disabled);
+    if (ifaceFilter) res = res.filter((c) => c.interface === ifaceFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      res = res.filter(
+        (c) =>
+          c.ip.toLowerCase().includes(q) ||
+          c.mac.toLowerCase().includes(q) ||
+          c.hostname.toLowerCase().includes(q) ||
+          c.comment.toLowerCase().includes(q),
+      );
+    }
+    const sorted = [...res];
+    if (sortBy === "ip") {
+      sorted.sort((a, b) => {
+        const pa = a.ip.split(".").map((n) => parseInt(n) || 0);
+        const pb = b.ip.split(".").map((n) => parseInt(n) || 0);
+        for (let i = 0; i < 4; i++) {
+          if (pa[i] !== pb[i]) return pa[i] - pb[i];
+        }
+        return 0;
+      });
+    } else if (sortBy === "hostname") {
+      sorted.sort((a, b) => (a.hostname || "").localeCompare(b.hostname || ""));
+    } else if (sortBy === "interface") {
+      sorted.sort((a, b) => (a.interface || "").localeCompare(b.interface || ""));
+    } else if (sortBy === "last_seen") {
+      sorted.sort((a, b) => (a.last_seen || "").localeCompare(b.last_seen || ""));
+    }
+    return sorted;
+  }, [clients, filter, ifaceFilter, search, sortBy]);
+
+  if (loading) {
+    return (
+      <div className="h-[300px] flex items-center justify-center text-xs text-muted-foreground">
+        <Icon name="Loader" size={16} className="animate-spin mr-2" />
+        Загрузка устройств...
+      </div>
+    );
+  }
+
+  if (err) {
+    return (
+      <div className="bg-destructive/10 border border-destructive/30 rounded p-4 text-xs">
+        <div className="flex items-center gap-2 mb-1">
+          <Icon name="AlertCircle" size={14} className="text-destructive" />
+          <span className="font-semibold">Не удалось получить устройства</span>
+        </div>
+        <div className="text-muted-foreground">{err}</div>
+        <button onClick={load} className="mt-2 h-7 px-3 bg-secondary border border-border rounded">
+          Повторить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="bg-secondary/40 rounded p-2">
+          <div className="text-[9px] uppercase text-muted-foreground">Всего</div>
+          <div className="font-mono-data text-lg font-bold">{stats.total}</div>
+        </div>
+        <div className="bg-green-500/10 border border-green-500/20 rounded p-2">
+          <div className="text-[9px] uppercase text-green-400">Онлайн</div>
+          <div className="font-mono-data text-lg font-bold text-green-400">{stats.online}</div>
+        </div>
+        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
+          <div className="text-[9px] uppercase text-blue-400">DHCP bound</div>
+          <div className="font-mono-data text-lg font-bold text-blue-400">{stats.bound}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="flex bg-secondary border border-border rounded overflow-hidden text-xs">
+          {[
+            { v: "all", l: "Все" },
+            { v: "online", l: "Онлайн" },
+            { v: "offline", l: "Оффлайн" },
+            { v: "blocked", l: "Блок" },
+          ].map((f) => (
+            <button
+              key={f.v}
+              onClick={() => setFilter(f.v as typeof filter)}
+              className={`px-2 py-1 ${filter === f.v ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
+            >
+              {f.l}
+            </button>
+          ))}
+        </div>
+
+        <select
+          value={ifaceFilter}
+          onChange={(e) => setIfaceFilter(e.target.value)}
+          className="h-7 px-2 bg-secondary border border-border rounded text-xs"
+        >
+          <option value="">Все интерфейсы</option>
+          {interfaces.map((i) => (
+            <option key={i} value={i}>{i}</option>
+          ))}
+        </select>
+
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+          className="h-7 px-2 bg-secondary border border-border rounded text-xs"
+        >
+          <option value="ip">Сорт. по IP</option>
+          <option value="hostname">по имени</option>
+          <option value="interface">по интерфейсу</option>
+          <option value="last_seen">по активности</option>
+        </select>
+
+        <input
+          placeholder="Поиск по IP / MAC / имени"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-7 px-2 bg-secondary border border-border rounded text-xs flex-1 min-w-[160px]"
+        />
+
+        <button onClick={load} className="h-7 px-2 bg-secondary border border-border rounded text-xs flex items-center gap-1">
+          <Icon name="RefreshCw" size={11} />
+          Обновить
+        </button>
+      </div>
+
+      <div className="text-[10px] text-muted-foreground mb-2">
+        Показано {filtered.length} из {clients.length}
+      </div>
+
+      <div className="max-h-[440px] overflow-y-auto">
+        <div className="grid grid-cols-12 gap-2 px-2 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground border-b border-border sticky top-0 bg-card">
+          <div className="col-span-1">Стат.</div>
+          <div className="col-span-2">IP</div>
+          <div className="col-span-3">MAC</div>
+          <div className="col-span-3">Имя / комментарий</div>
+          <div className="col-span-2">Интерфейс</div>
+          <div className="col-span-1 text-right">Активн.</div>
+        </div>
+        {filtered.map((c) => (
+          <div
+            key={c.mac + c.ip}
+            className="grid grid-cols-12 gap-2 px-2 py-1.5 text-xs border-b border-border/30 hover:bg-secondary/30"
+          >
+            <div className="col-span-1 flex items-center gap-1">
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{
+                  background: c.blocked || c.disabled ? "#ef4444" : c.reachable ? "#22c55e" : "#6b7280",
+                }}
+                title={c.blocked || c.disabled ? "Заблокирован" : c.reachable ? "Онлайн" : "Оффлайн"}
+              />
+              {c.source === "dhcp" ? (
+                <Icon name="Server" size={10} className="text-blue-400" />
+              ) : (
+                <Icon name="Radio" size={10} className="text-muted-foreground" />
+              )}
+            </div>
+            <div className="col-span-2 font-mono-data">{c.ip || "—"}</div>
+            <div className="col-span-3 font-mono-data text-[10px] text-muted-foreground">{c.mac}</div>
+            <div className="col-span-3 truncate" title={c.hostname || c.comment}>
+              {c.hostname || c.comment || <span className="text-muted-foreground">—</span>}
+            </div>
+            <div className="col-span-2 font-mono-data text-[10px]">{c.interface || "—"}</div>
+            <div className="col-span-1 text-right text-[10px] text-muted-foreground" title={`Аренда: ${c.expires_after}`}>
+              {c.last_seen || "—"}
+            </div>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <div className="text-center text-xs text-muted-foreground py-8">Ничего не найдено</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const ROUTER_ID = "r4-arttelecom";
 
 export default function RealMikrotikCard() {
   const [data, setData] = useState<MikrotikData | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"ports" | "consumption" | "peaks" | "performance">("ports");
+  const [tab, setTab] = useState<"ports" | "clients" | "consumption" | "peaks" | "performance">("ports");
   const [trafficHistory, setTrafficHistory] = useState<{ time: string; in: number; out: number }[]>([]);
   const prevSnapshot = useRef<{ ts: number; data: MikrotikData | null }>({ ts: 0, data: null });
   const idleCounters = useRef<Record<string, number>>({});
@@ -908,6 +1131,7 @@ export default function RealMikrotikCard() {
             <div className="flex gap-1 border-b border-border mb-3 flex-wrap">
               {[
                 { v: "ports" as const, label: `Порты (${data.interfaces.count})`, icon: "Cable" },
+                { v: "clients" as const, label: "Устройства", icon: "Users" },
                 { v: "consumption" as const, label: "Потребление", icon: "BarChart3" },
                 { v: "peaks" as const, label: "Пики", icon: "TrendingUp" },
                 { v: "performance" as const, label: "Производительность", icon: "Activity" },
@@ -953,6 +1177,8 @@ export default function RealMikrotikCard() {
                   ))}
               </div>
             )}
+
+            {tab === "clients" && <ClientsTab />}
 
             {tab === "consumption" && (
               <ConsumptionTab routerId={ROUTER_ID} ports={portSettings} uplinkNames={uplinkNames} downlinkNames={downlinkNames} />
