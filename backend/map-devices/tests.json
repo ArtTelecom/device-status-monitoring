@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {"name": "OPTIONS", "method": "OPTIONS", "path": "/", "expectedStatus": 200},
+    {
+      "name": "GET list",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {"success": true},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "POST add device",
+      "method": "POST",
+      "path": "/",
+      "body": {"device_type": "router", "name": "Test Router", "lat": 55.75, "lng": 37.61, "status": "online", "comment": "test"},
+      "expectedStatus": 200,
+      "expectedBody": {"success": true},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

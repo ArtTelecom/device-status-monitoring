@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS map_devices (
+  id SERIAL PRIMARY KEY,
+  device_type VARCHAR(20) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  lat DOUBLE PRECISION NOT NULL,
+  lng DOUBLE PRECISION NOT NULL,
+  status VARCHAR(20) DEFAULT 'online',
+  comment TEXT DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_map_devices_type ON map_devices(device_type);

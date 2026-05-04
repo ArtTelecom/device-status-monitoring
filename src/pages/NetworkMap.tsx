@@ -1,9 +1,22 @@
 import { useState, useEffect, useRef } from "react";
 import L from "leaflet";
+import { toast } from "sonner";
 import { makeOltIcon, makeOnuIcon, makeRouterIcon } from "@/components/map/leaflet-setup";
 import Icon from "@/components/ui/icon";
 import PageHeader from "@/components/common/PageHeader";
 import { OLTS, ONUS, ROUTERS } from "@/lib/mock-data";
+
+const MAP_DEVICES_URL = "https://functions.poehali.dev/f7c8b99c-b2f6-45f1-b756-2afe78cdc1d5";
+
+interface MapDevice {
+  id: number;
+  device_type: "olt" | "onu" | "router";
+  name: string;
+  lat: number;
+  lng: number;
+  status: string;
+  comment: string;
+}
 
 type LayerToggle = {
   olts: boolean;
@@ -16,8 +29,8 @@ type LayerToggle = {
 
 const TILE_URLS: Record<string, string> = {
   dark: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-  light: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-  sat: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  light: "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
+  sat: "https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
 };
 
 function statusBadge(status: string) {
@@ -61,6 +74,85 @@ export default function NetworkMap() {
   const [filter, setFilter] = useState<"all" | "online" | "warning" | "offline">("all");
   const [selectedOlt, setSelectedOlt] = useState<string | null>(null);
   const [showAddDevice, setShowAddDevice] = useState(false);
+  const [customDevices, setCustomDevices] = useState<MapDevice[]>([]);
+  const customGroupRef = useRef<L.LayerGroup | null>(null);
+  const [pickMode, setPickMode] = useState(false);
+  const [form, setForm] = useState({
+    device_type: "router" as "olt" | "onu" | "router",
+    name: "",
+    lat: "",
+    lng: "",
+    comment: "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const loadDevices = async () => {
+    try {
+      const r = await fetch(MAP_DEVICES_URL);
+      const j = await r.json();
+      if (j.success) setCustomDevices(j.items || []);
+    } catch (e) {
+      toast.error("Не удалось загрузить устройства");
+    }
+  };
+
+  const handleDelete = async (id: number, name: string) => {
+    if (!confirm(`Удалить устройство «${name}» с карты?`)) return;
+    try {
+      const r = await fetch(`${MAP_DEVICES_URL}?id=${id}`, { method: "DELETE" });
+      const j = await r.json();
+      if (j.success) {
+        toast.success("Устройство удалено");
+        setCustomDevices((d) => d.filter((x) => x.id !== id));
+      } else {
+        toast.error(j.message || "Ошибка удаления");
+      }
+    } catch {
+      toast.error("Ошибка сети");
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!form.name.trim()) {
+      toast.error("Укажите название");
+      return;
+    }
+    const lat = parseFloat(form.lat);
+    const lng = parseFloat(form.lng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+      toast.error("Укажите корректные координаты или кликните на карту");
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await fetch(MAP_DEVICES_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_type: form.device_type,
+          name: form.name,
+          lat,
+          lng,
+          status: "online",
+          comment: form.comment,
+        }),
+      });
+      const j = await r.json();
+      if (j.success && j.item) {
+        toast.success("Устройство добавлено");
+        setCustomDevices((d) => [j.item, ...d]);
+        setShowAddDevice(false);
+        setForm({ device_type: "router", name: "", lat: "", lng: "", comment: "" });
+        setPickMode(false);
+      } else {
+        toast.error(j.message || "Ошибка");
+      }
+    } catch {
+      toast.error("Ошибка сети");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Init map once
   useEffect(() => {
@@ -85,10 +177,14 @@ export default function NetworkMap() {
       links: L.layerGroup().addTo(map),
       rings: L.layerGroup().addTo(map),
     };
+    const customGroup = L.layerGroup().addTo(map);
 
     mapRef.current = map;
     tileLayerRef.current = tile;
     layerGroupsRef.current = groups;
+    customGroupRef.current = customGroup;
+
+    loadDevices();
 
     setTimeout(() => map.invalidateSize(), 50);
     setTimeout(() => map.invalidateSize(), 250);
@@ -237,6 +333,75 @@ export default function NetworkMap() {
       });
     }
   }, [layers, filter, selectedOlt]);
+
+  // Render custom devices
+  useEffect(() => {
+    const cg = customGroupRef.current;
+    if (!cg) return;
+    cg.clearLayers();
+    customDevices.forEach((d) => {
+      const icon =
+        d.device_type === "olt"
+          ? makeOltIcon(d.status || "online")
+          : d.device_type === "onu"
+            ? makeOnuIcon(d.status || "online")
+            : makeRouterIcon(d.status || "online");
+      const marker = L.marker([d.lat, d.lng], { icon }).addTo(cg);
+      const safeName = d.name.replace(/</g, "&lt;");
+      const safeComment = (d.comment || "").replace(/</g, "&lt;");
+      marker.bindPopup(`
+        <div style="min-width:220px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <strong style="font-size:13px">${safeName}</strong>
+            ${statusBadge(d.status || "online")}
+          </div>
+          <div style="color:#888;font-size:11px;margin-bottom:4px">Тип: ${d.device_type.toUpperCase()}</div>
+          ${safeComment ? `<div style="font-size:11px;margin-bottom:6px">${safeComment}</div>` : ""}
+          <div style="font-size:10px;color:#888;font-family:monospace">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}</div>
+          <button data-delete-id="${d.id}" data-delete-name="${safeName}"
+            style="margin-top:8px;width:100%;padding:6px;background:#ef4444;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">
+            Удалить с карты
+          </button>
+        </div>
+      `);
+    });
+  }, [customDevices]);
+
+  // Delegate delete button clicks
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      const btn = t.closest("[data-delete-id]") as HTMLElement | null;
+      if (btn) {
+        const id = parseInt(btn.dataset.deleteId || "0");
+        const name = btn.dataset.deleteName || "";
+        if (id) handleDelete(id, name);
+      }
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+
+  // Pick coordinates by clicking on map
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!pickMode) {
+      map.getContainer().style.cursor = "";
+      return;
+    }
+    map.getContainer().style.cursor = "crosshair";
+    const handler = (e: L.LeafletMouseEvent) => {
+      setForm((f) => ({ ...f, lat: e.latlng.lat.toFixed(6), lng: e.latlng.lng.toFixed(6) }));
+      setPickMode(false);
+      toast.success(`Координаты установлены: ${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`);
+    };
+    map.on("click", handler);
+    return () => {
+      map.off("click", handler);
+      map.getContainer().style.cursor = "";
+    };
+  }, [pickMode]);
 
   // Resize on window/container changes
   useEffect(() => {
@@ -404,6 +569,41 @@ export default function NetworkMap() {
             </div>
           </div>
 
+          {customDevices.length > 0 && (
+            <div className="bg-card border border-border rounded-lg p-4">
+              <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">
+                Добавленные ({customDevices.length})
+              </h3>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {customDevices.map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex items-center justify-between gap-2 text-xs px-2 py-1.5 rounded hover:bg-secondary group"
+                  >
+                    <button
+                      onClick={() => mapRef.current?.flyTo([d.lat, d.lng], 16)}
+                      className="flex items-center gap-1.5 truncate flex-1 text-left"
+                    >
+                      <Icon
+                        name={d.device_type === "olt" ? "Server" : d.device_type === "onu" ? "Router" : "Wifi"}
+                        size={12}
+                        className="text-muted-foreground shrink-0"
+                      />
+                      <span className="truncate">{d.name}</span>
+                    </button>
+                    <button
+                      onClick={() => handleDelete(d.id, d.name)}
+                      className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                      title="Удалить"
+                    >
+                      <Icon name="Trash2" size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="bg-card border border-border rounded-lg p-4">
             <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">Легенда</h3>
             <div className="space-y-2 text-xs">
@@ -439,6 +639,14 @@ export default function NetworkMap() {
         </div>
       </div>
 
+      {pickMode && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[999] bg-primary text-primary-foreground px-4 py-2 rounded-md shadow-lg text-sm flex items-center gap-2">
+          <Icon name="MousePointerClick" size={14} />
+          Кликните на карту, чтобы выбрать точку
+          <button onClick={() => setPickMode(false)} className="ml-2 underline text-xs">Отмена</button>
+        </div>
+      )}
+
       {showAddDevice && (
         <div
           className="fixed inset-0 bg-black/60 z-[1000] flex items-center justify-center p-4"
@@ -457,29 +665,40 @@ export default function NetworkMap() {
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">Тип устройства</label>
-                <select className="w-full h-9 px-3 bg-secondary border border-border rounded">
-                  <option>OLT</option>
-                  <option>ONU</option>
-                  <option>Роутер CPE</option>
-                  <option>Сплиттер</option>
-                  <option>Муфта</option>
+                <select
+                  value={form.device_type}
+                  onChange={(e) => setForm({ ...form, device_type: e.target.value as typeof form.device_type })}
+                  className="w-full h-9 px-3 bg-secondary border border-border rounded"
+                >
+                  <option value="olt">OLT</option>
+                  <option value="onu">ONU</option>
+                  <option value="router">Роутер CPE</option>
                 </select>
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">Название</label>
-                <input className="w-full h-9 px-3 bg-secondary border border-border rounded" placeholder="OLT-Запад-04" />
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full h-9 px-3 bg-secondary border border-border rounded"
+                  placeholder="OLT-Запад-04"
+                />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">IP-адрес</label>
+                <label className="text-xs text-muted-foreground mb-1 block">Комментарий</label>
                 <input
-                  className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
-                  placeholder="192.168.10.40"
+                  value={form.comment}
+                  onChange={(e) => setForm({ ...form, comment: e.target.value })}
+                  className="w-full h-9 px-3 bg-secondary border border-border rounded"
+                  placeholder="Адрес, IP или примечание"
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">Широта</label>
                   <input
+                    value={form.lat}
+                    onChange={(e) => setForm({ ...form, lat: e.target.value })}
                     className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
                     placeholder="55.7558"
                   />
@@ -487,14 +706,30 @@ export default function NetworkMap() {
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">Долгота</label>
                   <input
+                    value={form.lng}
+                    onChange={(e) => setForm({ ...form, lng: e.target.value })}
                     className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data"
                     placeholder="37.6173"
                   />
                 </div>
               </div>
+              <button
+                onClick={() => {
+                  setShowAddDevice(false);
+                  setPickMode(true);
+                }}
+                className="w-full h-9 bg-secondary border border-border rounded text-sm flex items-center justify-center gap-2 hover:bg-accent"
+              >
+                <Icon name="MapPin" size={14} />
+                Выбрать точку на карте
+              </button>
               <div className="flex gap-2 pt-2">
-                <button className="flex-1 h-9 bg-primary text-primary-foreground rounded font-medium text-sm">
-                  Добавить
+                <button
+                  onClick={handleAdd}
+                  disabled={saving}
+                  className="flex-1 h-9 bg-primary text-primary-foreground rounded font-medium text-sm disabled:opacity-50"
+                >
+                  {saving ? "Сохранение..." : "Добавить"}
                 </button>
                 <button
                   onClick={() => setShowAddDevice(false)}
