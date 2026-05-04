@@ -15,6 +15,7 @@ import RouterList from "./pages/RouterList";
 import RouterDetail from "./pages/RouterDetail";
 import CoreRouters from "./pages/CoreRouters";
 import Unregistered from "./pages/Unregistered";
+import Discovered from "./pages/Discovered";
 import Events from "./pages/Events";
 import Notifications from "./pages/Notifications";
 import Macros from "./pages/Macros";
@@ -45,6 +46,7 @@ const App = () => (
             <Route path="/routers/:id" element={<RouterDetail />} />
             <Route path="/core-routers" element={<CoreRouters />} />
             <Route path="/unregistered" element={<Unregistered />} />
+            <Route path="/discovered" element={<Discovered />} />
             <Route path="/events" element={<Events />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/macros" element={<Macros />} />

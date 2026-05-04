@@ -19,6 +19,7 @@ const NAV_GROUPS = [
       { to: "/onu", label: "ONU / Абоненты", icon: "Router" },
       { to: "/routers", label: "Роутеры", icon: "Wifi" },
       { to: "/unregistered", label: "Незарегистрированные", icon: "CircleHelp", badge: 4 },
+      { to: "/discovered", label: "Найдено в сети", icon: "Radar" },
       { to: "/groups", label: "Группы", icon: "Boxes" },
     ],
   },
