@@ -19,8 +19,8 @@ export default function Unregistered() {
         }
       />
 
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 flex items-center gap-3 text-sm">
-        <Icon name="AlertTriangle" size={16} className="text-yellow-500" />
+      <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 flex items-center gap-3 text-sm">
+        <Icon name="AlertTriangle" size={16} className="text-red-500" />
         <span>Найдено <strong>{UNREGISTERED.length}</strong> новых устройств. Зарегистрируйте их с подходящим профилем для активации.</span>
       </div>
 

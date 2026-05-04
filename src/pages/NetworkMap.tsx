@@ -539,7 +539,7 @@ export default function NetworkMap() {
                 setTool((t) => (t === "link" ? "select" : "link"));
                 setLinkFrom(null);
               }}
-              className={`h-9 px-3 rounded-md text-sm font-medium flex items-center gap-2 border ${tool === "link" ? "bg-amber-500/20 border-amber-500/50 text-amber-300" : "bg-secondary border-border hover:bg-accent"}`}
+              className={`h-9 px-3 rounded-md text-sm font-medium flex items-center gap-2 border ${tool === "link" ? "bg-red-500/20 border-red-500/50 text-red-300" : "bg-secondary border-border hover:bg-accent"}`}
             >
               <Icon name="Spline" size={14} />
               {tool === "link" ? (linkFrom !== null ? "Выбери второе" : "Выбери первое") : "Связь"}
@@ -606,7 +606,7 @@ export default function NetworkMap() {
       <div className="flex gap-3">
         <div className="flex-1 bg-card border border-border rounded-lg overflow-hidden relative" style={{ height: "calc(100vh - 240px)", minHeight: 500 }}>
           {tool === "place" && (
-            <div className="absolute top-3 left-3 z-[1000] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded px-3 py-1.5 text-xs font-medium flex items-center gap-2 backdrop-blur">
+            <div className="absolute top-3 left-3 z-[1000] bg-red-500/20 border border-red-500/40 text-red-300 rounded px-3 py-1.5 text-xs font-medium flex items-center gap-2 backdrop-blur">
               <Icon name="MapPin" size={12} />
               Кликни на карту чтобы поставить «{getPreset(placeType).label}»
               <button onClick={() => setTool("select")} className="ml-2 hover:text-white">
@@ -615,7 +615,7 @@ export default function NetworkMap() {
             </div>
           )}
           {tool === "link" && (
-            <div className="absolute top-3 left-3 z-[1000] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded px-3 py-1.5 text-xs font-medium flex items-center gap-2 backdrop-blur">
+            <div className="absolute top-3 left-3 z-[1000] bg-red-500/20 border border-red-500/40 text-red-300 rounded px-3 py-1.5 text-xs font-medium flex items-center gap-2 backdrop-blur">
               <Icon name="Spline" size={12} />
               {linkFrom !== null ? "Кликни второе устройство" : "Кликни первое устройство"}
               <button onClick={() => { setTool("select"); setLinkFrom(null); }} className="ml-2 hover:text-white">

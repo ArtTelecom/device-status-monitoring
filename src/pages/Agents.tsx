@@ -232,7 +232,7 @@ export default function Agents() {
         </div>
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="text-[10px] uppercase text-muted-foreground">Требуют обновления</div>
-          <div className="text-3xl font-mono-data mt-1 text-amber-400">
+          <div className="text-3xl font-mono-data mt-1 text-red-400">
             {agents.filter((a) => currentVersion && a.version < currentVersion.version).length}
           </div>
           <div className="text-[10px] text-muted-foreground mt-1">
@@ -287,7 +287,7 @@ export default function Agents() {
                         </td>
                         <td className="p-2 font-mono-data text-xs text-muted-foreground">{a.ip || "—"}</td>
                         <td className="p-2">
-                          <span className={`font-mono-data text-xs ${needsUpd ? "text-amber-400" : ""}`}>
+                          <span className={`font-mono-data text-xs ${needsUpd ? "text-red-400" : ""}`}>
                             v{a.version}
                             {needsUpd && (
                               <span className="ml-1 text-[10px]">→ v{currentVersion?.version}</span>
@@ -297,7 +297,7 @@ export default function Agents() {
                         <td className="p-2 text-xs text-muted-foreground">{timeAgo(a.last_seen)}</td>
                         <td className="p-2">
                           {a.pending_commands > 0 ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono-data">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-mono-data">
                               {a.pending_commands}
                             </span>
                           ) : (
@@ -376,7 +376,7 @@ export default function Agents() {
               <div>
                 <button
                   onClick={() => setShowShell(true)}
-                  className="w-full h-9 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-center gap-1.5"
+                  className="w-full h-9 rounded-md bg-red-500/15 border border-red-500/40 text-red-300 text-xs flex items-center justify-center gap-1.5"
                 >
                   <Icon name="Terminal" size={12} />
                   Выполнить shell-команду
@@ -395,7 +395,7 @@ export default function Agents() {
                           className={`px-1.5 py-0.5 rounded text-[9px] ${
                             l.status === "done" ? "bg-emerald-500/20 text-emerald-400" :
                             l.status === "error" ? "bg-destructive/20 text-destructive" :
-                            "bg-amber-500/20 text-amber-400"
+                            "bg-red-500/20 text-red-400"
                           }`}
                         >
                           {l.status}
@@ -494,7 +494,7 @@ export default function Agents() {
               placeholder="ipconfig /all"
               className="w-full p-3 bg-secondary border border-border rounded text-sm font-mono-data resize-none"
             />
-            <div className="text-[10px] text-amber-400 bg-amber-500/10 rounded p-2 border border-amber-500/30 mt-2">
+            <div className="text-[10px] text-red-400 bg-red-500/10 rounded p-2 border border-red-500/30 mt-2">
               <Icon name="AlertTriangle" size={10} className="inline mr-1" />
               Команда выполнится с правами агента. Результат появится в истории.
             </div>

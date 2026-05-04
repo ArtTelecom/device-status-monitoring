@@ -107,7 +107,7 @@ export default function SettingsPage() {
                   <input type="password" defaultValue="••••••••" className="w-full h-9 px-3 bg-secondary border border-border rounded font-mono-data" />
                 </div>
               </div>
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-xs text-yellow-200">
+              <div className="bg-red-500/10 border border-red-500/30 rounded p-3 text-xs text-red-300">
                 <Icon name="ShieldAlert" size={14} className="inline mr-1" />
                 Учётные данные хранятся в зашифрованном виде в защищённом хранилище секретов
               </div>
