@@ -51,14 +51,46 @@ def load_config():
     return cfg["agent"]
 
 
-def ping(ip, timeout_ms=800):
-    is_win = platform.system().lower().startswith("win")
+IS_WIN = platform.system().lower().startswith("win")
+CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
+
+
+def _detect_oem_encoding():
+    """Определяет OEM-кодировку Windows (cp866 для рус, cp437 для англ и т.д.)."""
+    if not IS_WIN:
+        return "utf-8"
     try:
-        if is_win:
+        import ctypes
+        cp = ctypes.windll.kernel32.GetOEMCP()
+        return f"cp{cp}"
+    except Exception:
+        return "cp866"
+
+
+OEM_ENCODING = _detect_oem_encoding()
+
+
+def _decode_bytes(data):
+    """Декодирует вывод консольной команды Windows с fallback по кодировкам."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    for enc in (OEM_ENCODING, "cp866", "cp1251", "utf-8", "latin-1"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def ping(ip, timeout_ms=800):
+    try:
+        if IS_WIN:
             r = subprocess.run(
                 ["ping", "-n", "1", "-w", str(timeout_ms), ip],
                 capture_output=True, timeout=(timeout_ms / 1000) + 2,
-                creationflags=0x08000000,
+                creationflags=CREATE_NO_WINDOW,
             )
         else:
             r = subprocess.run(
@@ -72,13 +104,14 @@ def ping(ip, timeout_ms=800):
 
 def get_arp_table():
     out = {}
-    is_win = platform.system().lower().startswith("win")
     try:
-        if is_win:
-            r = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=10, creationflags=0x08000000)
-        else:
-            r = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=10)
-        for line in r.stdout.splitlines():
+        r = subprocess.run(
+            ["arp", "-a"],
+            capture_output=True, timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        text = _decode_bytes(r.stdout)
+        for line in text.splitlines():
             m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F\-:]{11,17})", line)
             if m:
                 ip = m.group(1)
