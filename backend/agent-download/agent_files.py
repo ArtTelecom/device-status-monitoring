@@ -5,7 +5,7 @@ SCANNER_PY = r'''"""Windows-агент для сканирования лока�
 + Heartbeat, выполнение команд из админки, самообновление.
 """
 
-AGENT_VERSION = 4
+AGENT_VERSION = 5
 CONTROL_URL = "https://functions.poehali.dev/cfa102a8-741d-4190-b2da-e58a2ed0e3b3"
 
 import base64
@@ -760,6 +760,196 @@ def parse_cdata_olt(outputs):
     return info, [], onus
 
 
+def collect_cdata_via_web(ip, creds_extra, timeout=8):
+    """Парсинг C-Data OLT через веб-морду /cgi/index.php (PHP-based)."""
+    import http.cookiejar
+    import urllib.parse
+
+    candidates = list(creds_extra) + [
+        {"user": u, "password": p} for u, p in CDATA_DEFAULT_USERS
+    ]
+
+    for cred in candidates:
+        try:
+            cj = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+            opener.addheaders = [
+                ("User-Agent", "Mozilla/5.0"),
+                ("Accept", "text/html,application/json"),
+            ]
+
+            base = f"http://{ip}"
+
+            # 1) Открываем главную, получаем CSRF/cookie
+            try:
+                opener.open(f"{base}/cgi/index.php", timeout=timeout).read()
+            except Exception:
+                pass
+
+            # 2) Логинимся (типичные варианты для C-Data PHP)
+            login_data = urllib.parse.urlencode({
+                "username": cred["user"],
+                "password": cred["password"],
+                "Username": cred["user"],
+                "Password": cred["password"],
+                "user": cred["user"],
+                "passwd": cred["password"],
+                "login": "Login",
+                "submit": "Login",
+            }).encode()
+
+            login_urls = [
+                f"{base}/cgi/login.cgi",
+                f"{base}/cgi-bin/login.cgi",
+                f"{base}/cgi/index.php?action=login",
+                f"{base}/login.cgi",
+            ]
+            logged_in = False
+            for lu in login_urls:
+                try:
+                    req = urllib.request.Request(lu, data=login_data, method="POST")
+                    resp = opener.open(req, timeout=timeout)
+                    body = resp.read().decode("utf-8", errors="replace")
+                    if "logout" in body.lower() or "welcome" in body.lower() or any(
+                        c.name.lower() in ("sessionid", "phpsessid", "session") for c in cj
+                    ):
+                        logged_in = True
+                        break
+                except Exception:
+                    continue
+
+            if not logged_in:
+                # Пробуем Basic Auth
+                token = base64.b64encode(f"{cred['user']}:{cred['password']}".encode()).decode()
+                opener.addheaders.append(("Authorization", f"Basic {token}"))
+                try:
+                    body = opener.open(f"{base}/cgi/index.php", timeout=timeout).read().decode("utf-8", errors="replace")
+                    if "login" in body.lower() and "password" in body.lower() and len(body) < 3000:
+                        continue
+                    logged_in = True
+                except Exception:
+                    continue
+
+            if not logged_in:
+                continue
+
+            # 3) Системная инфа
+            info = {"vendor": "C-Data", "is_olt": True, "sys_descr": "C-Data GPON/EPON OLT"}
+            for path in ("/cgi/index.php?action=sysinfo", "/cgi/sys_info.cgi", "/cgi/index.php?page=system",
+                         "/cgi/get_sysinfo.cgi", "/cgi/index.php"):
+                try:
+                    txt = opener.open(f"{base}{path}", timeout=timeout).read().decode("utf-8", errors="replace")
+                    # JSON-вариант
+                    if txt.strip().startswith("{"):
+                        try:
+                            j = json.loads(txt)
+                            info["model"] = str(j.get("model", j.get("Model", "")))
+                            info["sys_descr"] = f"C-Data {info['model']} {j.get('version', j.get('Version', ''))}"
+                            info["uptime"] = str(j.get("uptime", j.get("Uptime", "")))
+                            if "cpu" in str(j).lower():
+                                m = re.search(r'"cpu[^"]*"\s*:\s*"?(\d+)', txt, re.I)
+                                if m: info["cpu_load"] = int(m.group(1))
+                            break
+                        except Exception:
+                            pass
+                    # HTML — выдираем характерные поля
+                    m = re.search(r"(?:Model|Модель|Hardware)[\s:<>/\w]*?([A-Z]{2,5}\d{3,5}[A-Z\-]*)", txt, re.I)
+                    if m: info["model"] = m.group(1)
+                    m = re.search(r"(?:Version|Firmware|Прошивка)[\s:<>/\w]*?([\d.]+(?:[a-z]\d*)?)", txt, re.I)
+                    if m: info["sys_descr"] = f"C-Data {info.get('model','OLT')} v{m.group(1)}"
+                    m = re.search(r"(?:Uptime|Время работы)[\s:<>/\w]*?(\d+\s*(?:days?|дн|часов|hours?|h)[^<]*)", txt, re.I)
+                    if m: info["uptime"] = m.group(1).strip()
+                    m = re.search(r"CPU[^<\d]{0,30}(\d{1,3})\s*%", txt, re.I)
+                    if m: info["cpu_load"] = int(m.group(1))
+                    if info.get("model"): break
+                except Exception:
+                    continue
+
+            # 4) ONU список
+            onus = []
+            for path in (
+                "/cgi/index.php?action=onuinfo",
+                "/cgi/index.php?action=onu_list",
+                "/cgi/index.php?page=onu",
+                "/cgi/onu_info.cgi",
+                "/cgi/get_onu.cgi",
+                "/cgi/index.php?action=getonuinfo",
+            ):
+                try:
+                    txt = opener.open(f"{base}{path}", timeout=timeout).read().decode("utf-8", errors="replace")
+                    # JSON
+                    if txt.strip().startswith(("{", "[")):
+                        try:
+                            j = json.loads(txt)
+                            arr = j if isinstance(j, list) else j.get("data", j.get("onus", j.get("list", [])))
+                            for o in arr if isinstance(arr, list) else []:
+                                onus.append({
+                                    "frame": int(o.get("frame", 1)),
+                                    "slot": int(o.get("slot", 1)),
+                                    "port": int(o.get("port", o.get("pon_port", 0))),
+                                    "onu_id": int(o.get("onu_id", o.get("id", 0))),
+                                    "serial": str(o.get("sn", o.get("serial", o.get("mac", "")))),
+                                    "status": str(o.get("status", o.get("state", "online"))).lower(),
+                                    "rx_dbm": float(o["rx_power"]) if o.get("rx_power") not in (None, "", "-") else None,
+                                    "tx_dbm": float(o["tx_power"]) if o.get("tx_power") not in (None, "", "-") else None,
+                                    "distance_m": int(o.get("distance", 0) or 0),
+                                })
+                            if onus: break
+                        except Exception:
+                            pass
+                    # HTML-таблица
+                    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", txt, re.I | re.S)
+                    for row in rows:
+                        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.I | re.S)
+                        cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+                        if len(cells) < 4:
+                            continue
+                        # Ищем серийник (ONU SN — обычно 12 hex или ALCL/HWTC и т.д.)
+                        sn_idx = None
+                        for i, c in enumerate(cells):
+                            if re.match(r"^[A-Z0-9]{8,16}$", c) or re.match(r"^[A-Z]{4}[0-9A-Fa-f]{8}$", c):
+                                sn_idx = i; break
+                        if sn_idx is None:
+                            continue
+                        # Пробуем достать port:onu_id из первой ячейки
+                        m = re.match(r"(\d+)[/:](\d+)[/:](\d+)(?:[:.](\d+))?", cells[0])
+                        frame = slot = port = onu_id = 0
+                        if m:
+                            frame = int(m.group(1)); slot = int(m.group(2))
+                            port = int(m.group(3)); onu_id = int(m.group(4) or 0)
+                        # RX/TX — числа со знаком и .
+                        rx = tx = None
+                        for c in cells:
+                            mm = re.match(r"^(-?\d+\.?\d*)\s*$", c)
+                            if mm:
+                                v = float(mm.group(1))
+                                if -40 < v < 0:
+                                    if rx is None: rx = v
+                                    elif tx is None: tx = v
+                        status = "online"
+                        for c in cells:
+                            cl = c.lower()
+                            if cl in ("online", "offline", "los", "lof", "dying", "active", "inactive"):
+                                status = cl; break
+                        onus.append({
+                            "frame": frame, "slot": slot, "port": port, "onu_id": onu_id,
+                            "serial": cells[sn_idx], "status": status,
+                            "rx_dbm": rx, "tx_dbm": tx,
+                        })
+                    if onus: break
+                except Exception:
+                    continue
+
+            print(f"  [C-Data WEB] {ip} OK ({cred['user']}/{cred['password']}) — модель: {info.get('model','?')}, ONU: {len(onus)}")
+            return info, [], onus
+
+        except Exception as e:
+            print(f"  [C-Data WEB] {ip} попытка {cred['user']}: {e}")
+            continue
+
+    return {}, [], []
+
+
 def collect_cdata_via_telnet(ip, creds_extra, timeout=8):
     """Активный опрос C-Data по Telnet — пробует все учётки."""
     if not TELNET_AVAILABLE:
@@ -1115,19 +1305,24 @@ def discover(cfg):
                     is_olt = True
                     onus = snmp_olt_onus(ip, community)
 
-        # === C-Data OLT: активный опрос Telnet/SSH с дефолтными учётками ===
+        # === C-Data OLT: активный опрос (WEB → Telnet → SSH) с дефолтными учётками ===
         # Запускается даже без credentials.json — пробует "admin/admin" и др.
         if not is_olt:
             hb = None
             if http_on:
                 hb = http_banner(ip, timeout=3)
             cdata_creds = [c for c in creds if "c-data" in (c.get("vendor", "").lower()) or "cdata" in (c.get("vendor", "").lower())]
-            try_cdata = bool(cdata_creds) or is_likely_cdata_olt(ip, hb)
+            try_cdata = bool(cdata_creds) or is_likely_cdata_olt(ip, hb) or (hb is not None)
             if try_cdata:
                 print(f"[*] {ip}: пробуем как C-Data OLT...")
                 ainfo, aif, aonus = ({}, [], [])
-                if telnet_on:
+                # 1) ВЕБ-МОРДА (приоритет — у C-Data это самый надёжный способ)
+                if http_on:
+                    ainfo, aif, aonus = collect_cdata_via_web(ip, cdata_creds, http_to + 4)
+                # 2) Telnet
+                if not ainfo and telnet_on:
                     ainfo, aif, aonus = collect_cdata_via_telnet(ip, cdata_creds, telnet_to + 3)
+                # 3) SSH
                 if not ainfo and ssh_on:
                     ainfo, aif, aonus = collect_cdata_via_ssh(ip, cdata_creds, ssh_to + 3)
                 if ainfo:
