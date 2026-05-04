@@ -1,0 +1,19 @@
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS icon VARCHAR(255) DEFAULT '';
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION DEFAULT 0;
+ALTER TABLE map_devices ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS map_links (
+  id SERIAL PRIMARY KEY,
+  source_id INTEGER NOT NULL,
+  target_id INTEGER NOT NULL,
+  source_port VARCHAR(64) DEFAULT '',
+  target_port VARCHAR(64) DEFAULT '',
+  bandwidth_mbps INTEGER DEFAULT 1000,
+  current_mbps DOUBLE PRECISION DEFAULT 0,
+  color VARCHAR(20) DEFAULT '#22c55e',
+  waypoints TEXT DEFAULT '[]',
+  label VARCHAR(255) DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_map_links_source ON map_links(source_id);
+CREATE INDEX IF NOT EXISTS idx_map_links_target ON map_links(target_id);
