@@ -72,16 +72,18 @@ def handler(event: dict, context) -> dict:
 
     try:
         # Все обнаруженные устройства
-        cur.execute("SELECT id, ip, mac, hostname, vendor, sys_descr FROM discovered_devices")
+        cur.execute("SELECT id, ip, mac, hostname, vendor, sys_descr, COALESCE(parent_id,0) FROM discovered_devices")
         disc = {}
         by_mac = {}
         by_ip = {}
         by_name = {}
+        children_of = {}
         for r in cur.fetchall():
-            did, ip, mac, host, vendor, descr = r
+            did, ip, mac, host, vendor, descr, parent = r
             disc[did] = {
                 'id': did, 'ip': ip, 'mac': norm_mac(mac or ''),
                 'hostname': host or '', 'vendor': vendor or '', 'sys_descr': descr or '',
+                'parent_id': parent or 0,
             }
             if mac:
                 by_mac[norm_mac(mac)] = did
@@ -89,6 +91,8 @@ def handler(event: dict, context) -> dict:
                 by_ip[ip] = did
             if host:
                 by_name[host.lower()] = did
+            if parent:
+                children_of.setdefault(parent, []).append(did)
 
         # Существующие map_devices, индекс по discovered_id (через name match)
         cur.execute("SELECT id, name, device_type, x, y FROM map_devices")
@@ -134,7 +138,36 @@ def handler(event: dict, context) -> dict:
             disc_to_map[did] = mid
             return mid
 
-        # Все соседи + локальные интерфейсы (для если нужен local_if_index)
+        # Сначала обрабатываем OLT -> ONU (parent_id у ONU указывает на OLT)
+        olt_onu_links = 0
+        for olt_did, child_ids in children_of.items():
+            if olt_did not in disc:
+                continue
+            olt_map = ensure_map_device(olt_did)
+            for onu_did in child_ids:
+                onu_map = ensure_map_device(onu_did)
+                # Проверим что линии нет
+                cur.execute(
+                    f"SELECT id FROM map_links WHERE "
+                    f"(source_id = {olt_map} AND target_id = {onu_map}) OR "
+                    f"(source_id = {onu_map} AND target_id = {olt_map})"
+                )
+                if cur.fetchone():
+                    continue
+                # Получаем olt_port у ONU
+                cur.execute(f"SELECT COALESCE(olt_port,'') FROM discovered_devices WHERE id = {onu_did}")
+                olt_port_row = cur.fetchone()
+                olt_port = (olt_port_row[0] if olt_port_row else '') or ''
+                cur.execute(
+                    f"INSERT INTO map_links (source_id, target_id, source_port, target_port, "
+                    f"bandwidth_mbps, current_mbps, color, waypoints, label, "
+                    f"source_discovered_id, target_discovered_id, source_if_index, target_if_index, auto_traffic) "
+                    f"VALUES ({olt_map}, {onu_map}, '{esc(olt_port)}', 'PON', 1000, 0, '#22d3ee', '[]', '', "
+                    f"{olt_did}, {onu_did}, 0, 0, FALSE)"
+                )
+                olt_onu_links += 1
+
+        # Все соседи + локальные интерфейсы
         cur.execute(
             "SELECT n.device_id, n.local_if_index, n.local_if_name, "
             "n.remote_chassis_id, n.remote_port_id, n.remote_port_descr, "
@@ -254,7 +287,8 @@ def handler(event: dict, context) -> dict:
             'body': json.dumps({
                 'success': True,
                 'created_devices': len(disc_to_map),
-                'created_links': created_links,
+                'created_links': created_links + olt_onu_links,
+                'olt_onu_links': olt_onu_links,
                 'unmatched_neighbors': unmatched,
                 'total_neighbors': len(neigh_rows),
             }),

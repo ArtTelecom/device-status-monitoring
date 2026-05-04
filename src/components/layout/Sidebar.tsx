@@ -7,7 +7,6 @@ const NAV_GROUPS = [
     items: [
       { to: "/", label: "Дашборд", icon: "LayoutDashboard", end: true },
       { to: "/map", label: "Карта сети", icon: "Map" },
-      { to: "/topology", label: "Топология", icon: "Workflow" },
       { to: "/events", label: "События", icon: "Bell", badge: 4 },
       { to: "/analytics", label: "Аналитика", icon: "BarChart3" },
     ],

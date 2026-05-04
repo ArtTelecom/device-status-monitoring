@@ -371,6 +371,123 @@ def snmp_lldp(ip, community):
     return out
 
 
+def detect_is_olt(sys_descr, vendor):
+    s = (sys_descr + " " + vendor).lower()
+    return any(k in s for k in ["olt", "epon", "gpon", "c-data", "cdata", "bdcom", "v-sol", "vsol"])
+
+
+def snmp_olt_onus(ip, community):
+    """
+    Опрашивает SNMP таблицы ONU на OLT (поддержка C-DATA / BDCOM EPON и Huawei GPON).
+    Возвращает список словарей с ONU.
+    """
+    if not SNMP_AVAILABLE:
+        return []
+    onus = []
+
+    # === EPON (C-DATA / BDCOM) ===
+    # cdata-epon-mib: oltEponOnuStatus tree (приватный OID 1.3.6.1.4.1.17409 - C-DATA)
+    # Универсальный путь: dot3OamPeerVendorOui (1.3.6.1.2.1.158.1.1.1.5)
+    # MAC ONU: dot3OamPeerMacAddress (1.3.6.1.2.1.158.1.1.1.4) - не везде есть
+    onu_macs = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.3.4.1.1.4", max_rows=512)
+    if not onu_macs:
+        onu_macs = snmp_walk(ip, community, "1.3.6.1.4.1.3320.101.10.1.1.3", max_rows=512)  # BDCOM
+    onu_status_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.3.4.1.1.5", max_rows=512)
+    onu_rx_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.8.4.1.1.4", max_rows=512)  # ONU RX (0.1 dBm)
+    onu_tx_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.8.4.1.1.5", max_rows=512)
+    olt_rx_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.8.4.1.1.6", max_rows=512)
+    onu_temp_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.8.4.1.1.1", max_rows=512)
+    onu_dist_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.3.4.1.1.10", max_rows=512)
+    onu_descr_w = snmp_walk(ip, community, "1.3.6.1.4.1.17409.2.3.4.1.1.6", max_rows=512)
+
+    def to_dict(rows):
+        return {k: v for k, v in rows}
+
+    macs = to_dict(onu_macs)
+    statuses = to_dict(onu_status_w)
+    rxs = to_dict(onu_rx_w)
+    txs = to_dict(onu_tx_w)
+    olt_rxs = to_dict(olt_rx_w)
+    temps = to_dict(onu_temp_w)
+    dists = to_dict(onu_dist_w)
+    descrs = to_dict(onu_descr_w)
+
+    for idx, mac_raw in macs.items():
+        mac = _hex_to_mac(mac_raw)
+        if len(mac) != 17:
+            mac = mac_raw
+        # idx обычно вида: <ifIndex>.<onuId>
+        port_parts = idx.split(".")
+        olt_port = port_parts[0] if port_parts else ''
+        onu_id_str = port_parts[-1] if port_parts else idx
+        try:
+            onu_id = int(onu_id_str)
+        except ValueError:
+            onu_id = 0
+
+        def fnum(s, scale=1.0):
+            try:
+                return float(s) * scale
+            except (ValueError, TypeError):
+                return 0.0
+
+        rx = fnum(rxs.get(idx, "0"), 0.1)
+        tx = fnum(txs.get(idx, "0"), 0.1)
+        olt_rx = fnum(olt_rxs.get(idx, "0"), 0.1)
+        temp = fnum(temps.get(idx, "0"), 1.0)
+        dist = int(fnum(dists.get(idx, "0")))
+        st_raw = statuses.get(idx, "1")
+        status = "online" if str(st_raw) in ("1", "3", "registered") else "offline"
+        descr = descrs.get(idx, "")
+
+        onus.append({
+            "onu_index": onu_id,
+            "olt_port": olt_port,
+            "mac": mac,
+            "name": descr or f"ONU-{onu_id}",
+            "rx_power_dbm": round(rx, 2),
+            "tx_power_dbm": round(tx, 2),
+            "olt_rx_dbm": round(olt_rx, 2),
+            "temp_c": round(temp, 1),
+            "distance_m": dist,
+            "status": status,
+        })
+
+    # === Huawei GPON (если C-DATA пусто) ===
+    if not onus:
+        hw_serials = snmp_walk(ip, community, "1.3.6.1.4.1.2011.6.128.1.1.2.43.1.3", max_rows=512)
+        hw_status = to_dict(snmp_walk(ip, community, "1.3.6.1.4.1.2011.6.128.1.1.2.46.1.15", max_rows=512))
+        hw_rx = to_dict(snmp_walk(ip, community, "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4", max_rows=512))
+        for idx, sn in hw_serials:
+            try:
+                rx_v = float(hw_rx.get(idx, "0")) / 100.0
+            except ValueError:
+                rx_v = 0.0
+            st = "online" if str(hw_status.get(idx, "1")) == "1" else "offline"
+            parts = idx.split(".")
+            olt_port = parts[0] if parts else ''
+            onu_id_str = parts[-1] if parts else idx
+            try:
+                onu_id = int(onu_id_str)
+            except ValueError:
+                onu_id = 0
+            onus.append({
+                "onu_index": onu_id,
+                "olt_port": olt_port,
+                "mac": "",
+                "serial": sn,
+                "name": f"ONU-{onu_id}",
+                "rx_power_dbm": round(rx_v, 2),
+                "tx_power_dbm": 0,
+                "olt_rx_dbm": 0,
+                "temp_c": 0,
+                "distance_m": 0,
+                "status": st,
+            })
+
+    return onus
+
+
 def snmp_cpu_mem(ip, community):
     """CPU и память — пробуем универсальные OID + специфичные."""
     cpu = 0
@@ -506,6 +623,8 @@ def discover(cfg):
         cpu, mem_used, mem_total = 0, 0, 0
         ifaces = []
         neighbors = []
+        onus = []
+        is_olt = False
         if snmp_enabled:
             sys_descr, sys_name, uptime, contact, location = snmp_probe(ip, community)
             if sys_name and not hostname:
@@ -516,6 +635,9 @@ def discover(cfg):
                     ifaces = snmp_interfaces(ip, community)
                 if snmp_lldp_on:
                     neighbors = snmp_lldp(ip, community)
+                if detect_is_olt(sys_descr, vendor_from_mac(mac)):
+                    is_olt = True
+                    onus = snmp_olt_onus(ip, community)
         loss, rtt = (0, 0)
         if do_deep:
             loss, rtt = deep_ping(ip, count=3, timeout_ms=int(ping_timeout))
@@ -533,6 +655,8 @@ def discover(cfg):
             "ping_loss": loss, "ping_rtt_ms": rtt,
             "interfaces": ifaces,
             "neighbors": neighbors,
+            "is_olt": is_olt,
+            "onus": onus,
         })
         extra = []
         if cpu: extra.append(f"CPU {cpu}%")
@@ -540,6 +664,7 @@ def discover(cfg):
         if loss: extra.append(f"loss {loss}%")
         if ifaces: extra.append(f"if:{len(ifaces)}")
         if neighbors: extra.append(f"lldp:{len(neighbors)}")
+        if is_olt: extra.append(f"OLT onu:{len(onus)}")
         extras = " · ".join(extra)
         print(f"  {ip:15s} {mac or '-':17s} {(hostname or vendor or '-')[:25]:25s} {extras}")
     return devices

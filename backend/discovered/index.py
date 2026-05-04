@@ -148,10 +148,14 @@ def handler(event: dict, context) -> dict:
                 return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'item': item}, ensure_ascii=False)}
 
             cur.execute(
-                "SELECT id, ip, mac, hostname, vendor, model, sys_descr, uptime, status, agent_id, "
-                "first_seen, last_seen, on_map, COALESCE(cpu_load,0), COALESCE(mem_used,0), COALESCE(mem_total,0), "
-                "COALESCE(ping_loss,0), COALESCE(ping_rtt_ms,0), COALESCE(contact,''), COALESCE(location,'') "
-                "FROM discovered_devices ORDER BY last_seen DESC"
+                "SELECT d.id, d.ip, d.mac, d.hostname, d.vendor, d.model, d.sys_descr, d.uptime, d.status, d.agent_id, "
+                "d.first_seen, d.last_seen, d.on_map, COALESCE(d.cpu_load,0), COALESCE(d.mem_used,0), COALESCE(d.mem_total,0), "
+                "COALESCE(d.ping_loss,0), COALESCE(d.ping_rtt_ms,0), COALESCE(d.contact,''), COALESCE(d.location,''), "
+                "COALESCE(d.parent_id,0), COALESCE(d.onu_index,0), COALESCE(d.olt_port,''), "
+                "COALESCE(s.rx_power_dbm,0), COALESCE(s.tx_power_dbm,0), COALESCE(s.olt_rx_dbm,0), "
+                "COALESCE(s.temp_c,0), COALESCE(s.distance_m,0) "
+                "FROM discovered_devices d LEFT JOIN onu_signals s ON s.device_id = d.id "
+                "ORDER BY COALESCE(d.parent_id,0), d.last_seen DESC"
             )
             items = []
             for r in cur.fetchall():
@@ -164,6 +168,9 @@ def handler(event: dict, context) -> dict:
                     'on_map': r[12], 'cpu_load': r[13], 'mem_used': r[14], 'mem_total': r[15],
                     'ping_loss': r[16], 'ping_rtt_ms': r[17],
                     'contact': r[18], 'location': r[19],
+                    'parent_id': r[20], 'onu_index': r[21], 'olt_port': r[22],
+                    'rx_power_dbm': float(r[23]), 'tx_power_dbm': float(r[24]),
+                    'olt_rx_dbm': float(r[25]), 'temp_c': float(r[26]), 'distance_m': r[27],
                 })
             return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'items': items}, ensure_ascii=False)}
 
@@ -237,6 +244,56 @@ def handler(event: dict, context) -> dict:
                 mem_pct = int((mem_used * 100) / mem_total) if mem_total > 0 else 0
                 insert_metric(cur, did_i, cpu, mem_pct, ping_rtt, ping_loss, tin, tout)
 
+                # ONU с OLT — создаём как дочерние discovered_devices
+                onus = d.get('onus') or []
+                is_olt = bool(d.get('is_olt'))
+                if is_olt and isinstance(onus, list):
+                    for onu in onus:
+                        onu_mac = esc(str(onu.get('mac', '')).lower())
+                        onu_idx = safe_int(onu.get('onu_index'))
+                        olt_port = esc(onu.get('olt_port', ''))
+                        onu_name = esc(onu.get('name', f'ONU-{onu_idx}'))
+                        onu_status = esc(onu.get('status', 'online'))
+                        # Уникальный синтетический IP для ONU без IP: "OLT-IP/onu-id"
+                        onu_pseudo_ip = esc(f"{d.get('ip','')}/onu-{onu_idx}")
+                        # Ищем по parent_id + onu_index или mac
+                        if onu_mac:
+                            cur.execute(f"SELECT id FROM discovered_devices WHERE parent_id = {did_i} AND mac = '{onu_mac}'")
+                        else:
+                            cur.execute(f"SELECT id FROM discovered_devices WHERE parent_id = {did_i} AND onu_index = {onu_idx}")
+                        orow = cur.fetchone()
+                        if orow:
+                            onu_did = orow[0]
+                            cur.execute(
+                                f"UPDATE discovered_devices SET hostname = '{onu_name}', status = '{onu_status}', "
+                                f"olt_port = '{olt_port}', vendor = 'ONU', model = 'ONU EPON/GPON', "
+                                f"agent_id = '{agent_id}', last_seen = CURRENT_TIMESTAMP WHERE id = {onu_did}"
+                            )
+                        else:
+                            cur.execute(
+                                f"INSERT INTO discovered_devices (ip, mac, hostname, vendor, model, sys_descr, "
+                                f"uptime, status, agent_id, parent_id, onu_index, olt_port) VALUES "
+                                f"('{onu_pseudo_ip}', '{onu_mac}', '{onu_name}', 'ONU', 'ONU EPON/GPON', "
+                                f"'ONU on {esc(d.get('ip',''))} port {olt_port}', '', '{onu_status}', "
+                                f"'{agent_id}', {did_i}, {onu_idx}, '{olt_port}') RETURNING id"
+                            )
+                            onu_did = cur.fetchone()[0]
+                        rx = float(onu.get('rx_power_dbm', 0) or 0)
+                        tx = float(onu.get('tx_power_dbm', 0) or 0)
+                        olt_rx = float(onu.get('olt_rx_dbm', 0) or 0)
+                        temp = float(onu.get('temp_c', 0) or 0)
+                        dist = safe_int(onu.get('distance_m'))
+                        cur.execute(
+                            f"INSERT INTO onu_signals (device_id, rx_power_dbm, tx_power_dbm, olt_rx_dbm, "
+                            f"temp_c, distance_m, online_status, last_seen) VALUES "
+                            f"({onu_did}, {rx}, {tx}, {olt_rx}, {temp}, {dist}, '{onu_status}', CURRENT_TIMESTAMP) "
+                            f"ON CONFLICT (device_id) DO UPDATE SET "
+                            f"rx_power_dbm = EXCLUDED.rx_power_dbm, tx_power_dbm = EXCLUDED.tx_power_dbm, "
+                            f"olt_rx_dbm = EXCLUDED.olt_rx_dbm, temp_c = EXCLUDED.temp_c, "
+                            f"distance_m = EXCLUDED.distance_m, online_status = EXCLUDED.online_status, "
+                            f"last_seen = CURRENT_TIMESTAMP"
+                        )
+
                 neighbors = d.get('neighbors') or []
                 if isinstance(neighbors, list) and neighbors:
                     cur.execute(f"DELETE FROM lldp_neighbors WHERE device_id = {did_i}")
@@ -272,6 +329,7 @@ def handler(event: dict, context) -> dict:
                 cur.execute("DELETE FROM interface_counters")
                 cur.execute("DELETE FROM discovered_metrics")
                 cur.execute("DELETE FROM lldp_neighbors")
+                cur.execute("DELETE FROM onu_signals")
                 cur.execute("DELETE FROM discovered_devices")
                 return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'deleted_all': True})}
             did = params.get('id')
@@ -284,6 +342,8 @@ def handler(event: dict, context) -> dict:
             cur.execute(f"DELETE FROM interface_counters WHERE device_id = {did_i}")
             cur.execute(f"DELETE FROM discovered_metrics WHERE device_id = {did_i}")
             cur.execute(f"DELETE FROM lldp_neighbors WHERE device_id = {did_i}")
+            cur.execute(f"DELETE FROM onu_signals WHERE device_id = {did_i}")
+            cur.execute(f"DELETE FROM discovered_devices WHERE parent_id = {did_i}")
             cur.execute(f"DELETE FROM discovered_devices WHERE id = {did_i}")
             return {'statusCode': 200, 'headers': cors_headers(), 'body': json.dumps({'success': True, 'deleted': did_i})}
 
