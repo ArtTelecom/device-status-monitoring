@@ -5,6 +5,7 @@ import PageHeader from "@/components/common/PageHeader";
 
 const DISCOVERED_URL = "https://functions.poehali.dev/abad93d7-09ca-427b-aa2a-54953ec499b8";
 const MAP_DEVICES_URL = "https://functions.poehali.dev/f7c8b99c-b2f6-45f1-b756-2afe78cdc1d5";
+const AGENT_BUILD_URL = "https://functions.poehali.dev/e169029d-d980-4c62-89ad-b59e09fab4bd";
 
 interface Discovered {
   id: number;
@@ -35,6 +36,30 @@ export default function Discovered() {
   const [items, setItems] = useState<Discovered[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadAgent = async () => {
+    setDownloading(true);
+    try {
+      const r = await fetch(AGENT_BUILD_URL);
+      const j = await r.json();
+      if (j.success && j.url) {
+        const a = document.createElement("a");
+        a.href = j.url;
+        a.download = "network-agent.zip";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        toast.success("Архив скачивается");
+      } else {
+        toast.error("Не удалось собрать архив");
+      }
+    } catch {
+      toast.error("Ошибка скачивания");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const load = async () => {
     try {
@@ -119,13 +144,23 @@ export default function Discovered() {
         title="Найденное оборудование"
         description="Устройства, обнаруженные Windows-агентом в локальной сети"
         actions={
-          <button
-            onClick={load}
-            className="h-9 px-3 rounded-md bg-secondary border border-border text-sm font-medium flex items-center gap-2 hover:bg-accent"
-          >
-            <Icon name="RefreshCw" size={14} />
-            Обновить
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleDownloadAgent}
+              disabled={downloading}
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium flex items-center gap-2 hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Icon name={downloading ? "Loader2" : "Download"} size={14} className={downloading ? "animate-spin" : ""} />
+              {downloading ? "Готовлю..." : "Скачать агент"}
+            </button>
+            <button
+              onClick={load}
+              className="h-9 px-3 rounded-md bg-secondary border border-border text-sm font-medium flex items-center gap-2 hover:bg-accent"
+            >
+              <Icon name="RefreshCw" size={14} />
+              Обновить
+            </button>
+          </div>
         }
       />
 
@@ -243,11 +278,15 @@ export default function Discovered() {
           <Icon name="Terminal" size={14} />
           Как подключить агент
         </h3>
-        <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
-          <li>Скачай папку <code className="font-mono-data text-foreground">agent/</code> из проекта на Windows-машину в локальной сети.</li>
-          <li>Запусти один раз <code className="font-mono-data text-foreground">scanner.py</code> или <code className="font-mono-data text-foreground">run.bat</code> — создастся <code className="font-mono-data text-foreground">config.ini</code>.</li>
-          <li>Открой <code className="font-mono-data text-foreground">config.ini</code> и впиши: <code className="font-mono-data text-foreground">token</code> (значение секрета AGENT_TOKEN) и <code className="font-mono-data text-foreground">subnet</code> (свою подсеть).</li>
-          <li>Запусти ещё раз. Каждые 60 сек найденное появится в этой таблице. Подробности — в <code className="font-mono-data text-foreground">agent/README.md</code>.</li>
+        <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
+          <li>Нажми кнопку <b className="text-foreground">«Скачать агент»</b> вверху — получишь <code className="font-mono-data text-foreground">network-agent.zip</code>.</li>
+          <li>Распакуй архив на любом Windows-компьютере в нужной локальной сети.</li>
+          <li>Установи Python 3.9+ с <a href="https://www.python.org/downloads/" target="_blank" rel="noreferrer" className="text-primary underline">python.org</a> (галочка <b>Add Python to PATH</b>).</li>
+          <li>Двойной клик на <code className="font-mono-data text-foreground">install_deps.bat</code> — установит SNMP-библиотеку.</li>
+          <li>Двойной клик на <code className="font-mono-data text-foreground">run.bat</code> — создастся <code className="font-mono-data text-foreground">config.ini</code>.</li>
+          <li>Открой <code className="font-mono-data text-foreground">config.ini</code> в Блокноте и впиши: <code className="font-mono-data text-foreground">token</code> (значение секрета AGENT_TOKEN с сайта) и <code className="font-mono-data text-foreground">subnet</code> (свою подсеть, например <code className="font-mono-data text-foreground">192.168.88.0/24</code>).</li>
+          <li>Снова двойной клик на <code className="font-mono-data text-foreground">run.bat</code>. Окно консоли оставь открытым — каждые 60 сек найденное оборудование появится в этой таблице.</li>
+          <li>(Опционально) Запусти <code className="font-mono-data text-foreground">build_exe.bat</code>, чтобы получить один <code className="font-mono-data text-foreground">scanner.exe</code> без установки Python.</li>
         </ol>
       </div>
     </div>
