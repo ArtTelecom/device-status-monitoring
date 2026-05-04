@@ -41,7 +41,10 @@ const NAV_GROUPS = [
   },
 ];
 
-const ADMIN_ITEM = { to: "/admin", label: "Админ-панель", icon: "ShieldCheck" };
+const ADMIN_ITEMS = [
+  { to: "/admin", label: "Админ-панель", icon: "ShieldCheck" },
+  { to: "/agents", label: "Агенты", icon: "Cpu" },
+];
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -93,18 +96,19 @@ export default function Sidebar() {
                   )}
                 </NavLink>
               ))}
-              {group.title === "Администрирование" && user?.role === "admin" && (
+              {group.title === "Администрирование" && user?.role === "admin" && ADMIN_ITEMS.map((item) => (
                 <NavLink
-                  to={ADMIN_ITEM.to}
+                  key={item.to}
+                  to={item.to}
                   className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
                 >
-                  <Icon name={ADMIN_ITEM.icon} size={16} />
-                  <span className="flex-1">{ADMIN_ITEM.label}</span>
+                  <Icon name={item.icon} size={16} />
+                  <span className="flex-1">{item.label}</span>
                   <span className="text-[10px] font-mono-data px-1.5 py-0.5 rounded bg-primary/15 text-primary">
                     admin
                   </span>
                 </NavLink>
-              )}
+              ))}
             </div>
           </div>
         ))}

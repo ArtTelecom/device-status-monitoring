@@ -1,4 +1,6 @@
 {
+  "admin-agents": "https://functions.poehali.dev/0b15fa47-7f82-4fc6-aaf5-4a56f9ed828f",
+  "agent-control": "https://functions.poehali.dev/cfa102a8-741d-4190-b2da-e58a2ed0e3b3",
   "admin-users": "https://functions.poehali.dev/21e3740f-8c6d-490e-b169-0b548d5e9ec6",
   "auth": "https://functions.poehali.dev/86948a87-bbd9-4f47-8cca-6d53e86724ef",
   "topology-autobuild": "https://functions.poehali.dev/7a43803f-93f5-4e5e-9047-f39101e88322",

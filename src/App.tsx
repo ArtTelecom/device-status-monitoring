@@ -10,6 +10,7 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Admin from "./pages/Admin";
+import Agents from "./pages/Agents";
 import Dashboard from "./pages/Dashboard";
 import NetworkMap from "./pages/NetworkMap";
 import Devices from "./pages/Devices";
@@ -67,6 +68,7 @@ function ProtectedRoutes() {
         <Route path="/groups" element={<Groups />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/agents" element={<Agents />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </AppLayout>

@@ -2,12 +2,17 @@
 
 SCANNER_PY = r'''"""Windows-агент для сканирования локальной сети.
 Поддержка: ICMP, ARP, SNMP v1/v2c, SSH, Telnet, HTTP/HTTPS API (MikroTik REST, Ubiquiti, generic).
++ Heartbeat, выполнение команд из админки, самообновление.
 """
+
+AGENT_VERSION = 1
+CONTROL_URL = "https://functions.poehali.dev/cfa102a8-741d-4190-b2da-e58a2ed0e3b3"
 
 import base64
 import configparser
 import ipaddress
 import json
+import os
 import platform
 import re
 import socket
@@ -1031,16 +1036,191 @@ def push(cfg, devices):
         return False
 
 
+def heartbeat(cfg):
+    """Регистрация + забор pending-команд."""
+    token = cfg.get("token", "").strip()
+    if not token or token.startswith("ВСТАВЬ"):
+        return None
+    payload = {
+        "agent_id": cfg.get("agent_id", "agent"),
+        "hostname": socket.gethostname(),
+        "os": platform.platform(),
+        "version": AGENT_VERSION,
+        "config": {
+            "subnet": cfg.get("subnet", ""),
+            "interval": cfg.get("interval", "60"),
+            "snmp_enabled": cfg.get("snmp_enabled", "true"),
+        },
+    }
+    try:
+        req = urllib.request.Request(
+            CONTROL_URL + "?action=heartbeat",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "X-Agent-Token": token},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[!] heartbeat: {e}")
+        return None
+
+
+def report_command(cfg, cmd_id, status, result):
+    token = cfg.get("token", "").strip()
+    if not token:
+        return
+    try:
+        body = json.dumps({"command_id": cmd_id, "status": status, "result": str(result)[:2000]}).encode()
+        req = urllib.request.Request(
+            CONTROL_URL + "?action=result", data=body, method="POST",
+            headers={"Content-Type": "application/json", "X-Agent-Token": token},
+        )
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
+
+
+def fetch_new_script(cfg):
+    """Скачивает актуальный scanner.py с сервера."""
+    token = cfg.get("token", "").strip()
+    if not token:
+        return None
+    try:
+        req = urllib.request.Request(
+            CONTROL_URL + "?action=script", method="GET",
+            headers={"X-Agent-Token": token},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            if data.get("success"):
+                return data.get("source", ""), int(data.get("version", 0))
+    except Exception as e:
+        print(f"[!] update: {e}")
+    return None
+
+
+def self_update(cfg):
+    """Скачивает новую версию scanner.py, заменяет себя и перезапускается."""
+    res = fetch_new_script(cfg)
+    if not res:
+        return False
+    src, new_v = res
+    if new_v <= AGENT_VERSION or len(src) < 200:
+        print(f"[*] Обновление не требуется (server v{new_v}, local v{AGENT_VERSION})")
+        return False
+    me = Path(sys.argv[0]).resolve()
+    if not me.exists() or me.suffix not in (".py", ""):
+        print("[!] Самообновление поддерживается только при запуске из .py")
+        return False
+    backup = me.with_suffix(".py.bak")
+    try:
+        backup.write_text(me.read_text(encoding="utf-8"), encoding="utf-8")
+        me.write_text(src, encoding="utf-8")
+        print(f"[OK] Обновлено до v{new_v}, перезапускаю...")
+        os.execv(sys.executable, [sys.executable, str(me)])
+    except Exception as e:
+        print(f"[!] Не удалось применить обновление: {e}")
+        try:
+            me.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+    return False
+
+
+def update_config_value(cfg_path, section, key, value):
+    cp = configparser.ConfigParser()
+    cp.read(cfg_path, encoding="utf-8")
+    if section not in cp:
+        cp[section] = {}
+    cp[section][key] = str(value)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        cp.write(f)
+
+
+def execute_command(cfg, cmd_id, command, payload_str):
+    """Выполняет команду от админа."""
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except Exception:
+        payload = {}
+    print(f"[CMD] {command} {payload}")
+    if command == "rescan_now":
+        return "scheduled"
+    if command == "set_interval":
+        v = int(payload.get("interval", 60))
+        update_config_value(CONFIG_FILE, "agent", "interval", v)
+        return f"interval={v}"
+    if command == "set_subnet":
+        s = payload.get("subnet", "")
+        update_config_value(CONFIG_FILE, "agent", "subnet", s)
+        return f"subnet={s}"
+    if command == "set_credentials":
+        creds = payload.get("credentials", [])
+        Path("credentials.json").write_text(json.dumps(creds, indent=2, ensure_ascii=False), encoding="utf-8")
+        return f"credentials updated ({len(creds)})"
+    if command == "reload_config":
+        return "ok (will be applied on next cycle)"
+    if command == "self_update":
+        ok = self_update(cfg)
+        return "updated" if ok else "no update / failed"
+    if command == "restart":
+        report_command(cfg, cmd_id, "done", "restarting")
+        os.execv(sys.executable, [sys.executable, sys.argv[0]])
+    if command == "shutdown":
+        report_command(cfg, cmd_id, "done", "shutting down")
+        sys.exit(0)
+    if command == "run_shell":
+        cmd_str = payload.get("cmd", "")
+        if not cmd_str:
+            return "empty cmd"
+        try:
+            r = subprocess.run(cmd_str, shell=True, capture_output=True, timeout=30,
+                               creationflags=CREATE_NO_WINDOW)
+            out = _decode_bytes(r.stdout) + "\n" + _decode_bytes(r.stderr)
+            return out[:1500]
+        except Exception as e:
+            return f"err: {e}"
+    return f"unknown command: {command}"
+
+
 def main():
     print("=" * 60)
-    print("  Network Scanner Agent для Windows")
+    print(f"  Network Scanner Agent v{AGENT_VERSION} для Windows")
     print("=" * 60)
     cfg = load_config()
     interval = int(cfg.get("interval", "60"))
     if not SNMP_AVAILABLE:
         print("[!] pysnmp не установлен. Запусти install_deps.bat")
+
     while True:
+        # 1) Heartbeat и получение команд
         try:
+            hb = heartbeat(cfg)
+            if hb and hb.get("success"):
+                if hb.get("update_available"):
+                    print(f"[*] Доступно обновление до v{hb.get('current_version')} — применяю...")
+                    self_update(cfg)
+                for c in hb.get("commands", []):
+                    cid = c.get("id")
+                    cmd = c.get("command", "")
+                    pld = c.get("payload", "{}")
+                    try:
+                        result = execute_command(cfg, cid, cmd, pld)
+                        report_command(cfg, cid, "done", result)
+                    except SystemExit:
+                        raise
+                    except Exception as e:
+                        report_command(cfg, cid, "error", str(e))
+        except KeyboardInterrupt:
+            return
+        except Exception as e:
+            print(f"[!] heartbeat-loop: {e}")
+
+        # 2) Сканирование
+        try:
+            cfg = load_config()  # подхватываем изменения config.ini
+            interval = int(cfg.get("interval", "60"))
             devices = discover(cfg)
             if devices:
                 push(cfg, devices)

@@ -1,0 +1,6 @@
+{
+  "tests": [
+    {"name": "OPTIONS", "method": "OPTIONS", "path": "/", "expectedStatus": 200},
+    {"name": "POST no token", "method": "POST", "path": "/?action=heartbeat", "body": {"agent_id": "test"}, "expectedStatus": 401}
+  ]
+}
