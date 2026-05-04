@@ -14,6 +14,7 @@ import {
   PolarAngleAxis,
   Legend,
 } from "recharts";
+import { toast } from "sonner";
 import Icon from "@/components/ui/icon";
 import {
   fetchMikrotik,
@@ -477,6 +478,8 @@ export default function RealMikrotikCard() {
   const [tab, setTab] = useState<"ports" | "consumption" | "peaks" | "performance">("ports");
   const [trafficHistory, setTrafficHistory] = useState<{ time: string; in: number; out: number }[]>([]);
   const prevSnapshot = useRef<{ ts: number; data: MikrotikData | null }>({ ts: 0, data: null });
+  const idleCounters = useRef<Record<string, number>>({});
+  const alertedPorts = useRef<Set<string>>(new Set());
   const [portSpeeds, setPortSpeeds] = useState<Record<string, { in: number; out: number }>>({});
   const [routerSettings, setRouterSettings] = useState<RouterSettings | null>(null);
   const [portSettings, setPortSettings] = useState<PortSettings[]>([]);
@@ -540,6 +543,7 @@ export default function RealMikrotikCard() {
           json.interfaces.list.forEach((cur) => {
             const prev = prevSnapshot.current.data!.interfaces.list.find((p) => p.name === cur.name);
             if (prev) {
+              const deltaBytes = (cur.rx_bytes - prev.rx_bytes) + (cur.tx_bytes - prev.tx_bytes);
               const inBps = Math.max(0, ((cur.rx_bytes - prev.rx_bytes) * 8) / dt);
               const outBps = Math.max(0, ((cur.tx_bytes - prev.tx_bytes) * 8) / dt);
               speeds[cur.name] = { in: inBps, out: outBps };
@@ -553,6 +557,32 @@ export default function RealMikrotikCard() {
                   rx_bps: Math.round(inBps),
                   tx_bps: Math.round(outBps),
                 });
+
+                // Оповещение о пропадании потребления на активном порту
+                const isMonitored = uplinkNames.includes(cur.name) || downlinkNames.includes(cur.name);
+                if (isMonitored) {
+                  if (deltaBytes <= 0) {
+                    idleCounters.current[cur.name] = (idleCounters.current[cur.name] || 0) + 1;
+                    if (idleCounters.current[cur.name] >= 3 && !alertedPorts.current.has(cur.name)) {
+                      alertedPorts.current.add(cur.name);
+                      const portLabel = portSettingsMap[cur.name]?.custom_name || cur.name;
+                      toast.warning(`Пропало потребление: ${portLabel}`, {
+                        description: "Порт активен, но трафик отсутствует более 15 секунд",
+                        duration: 8000,
+                      });
+                    }
+                  } else {
+                    if (alertedPorts.current.has(cur.name)) {
+                      const portLabel = portSettingsMap[cur.name]?.custom_name || cur.name;
+                      toast.success(`Трафик восстановлен: ${portLabel}`, { duration: 4000 });
+                    }
+                    idleCounters.current[cur.name] = 0;
+                    alertedPorts.current.delete(cur.name);
+                  }
+                }
+              } else {
+                idleCounters.current[cur.name] = 0;
+                alertedPorts.current.delete(cur.name);
               }
             }
           });
