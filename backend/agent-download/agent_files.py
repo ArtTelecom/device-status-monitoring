@@ -1,13 +1,17 @@
 """Содержимое файлов агента для упаковки в ZIP."""
 
-SCANNER_PY = r'''"""Windows-агент для сканирования локальной сети с SNMP-метриками."""
+SCANNER_PY = r'''"""Windows-агент для сканирования локальной сети.
+Поддержка: ICMP, ARP, SNMP v1/v2c, SSH, Telnet, HTTP/HTTPS API (MikroTik REST, Ubiquiti, generic).
+"""
 
+import base64
 import configparser
 import ipaddress
 import json
 import platform
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -15,6 +19,18 @@ import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+try:
+    import paramiko
+    SSH_AVAILABLE = True
+except ImportError:
+    SSH_AVAILABLE = False
+
+try:
+    import telnetlib
+    TELNET_AVAILABLE = True
+except ImportError:
+    TELNET_AVAILABLE = False
 
 try:
     from pysnmp.hlapi import (
@@ -58,6 +74,16 @@ snmp_interfaces = true
 snmp_lldp = true
 # Считать дроп пакетов через мини-серию ping (4 пакета)
 deep_ping = true
+
+# === Активные подключения по логину/паролю ===
+# Если SNMP недоступен — попробуем SSH/Telnet/HTTP API
+# Учётки берутся из credentials.json (см. credentials.example.json)
+ssh_enabled = true
+ssh_timeout = 5
+telnet_enabled = true
+telnet_timeout = 5
+http_api_enabled = true
+http_api_timeout = 6
 """
 
 
@@ -488,6 +514,277 @@ def snmp_olt_onus(ip, community):
     return onus
 
 
+# ============= АКТИВНЫЕ ПОДКЛЮЧЕНИЯ ПО ЛОГИНУ/ПАРОЛЮ =============
+
+def load_credentials():
+    """Читает credentials.json — список учёток для активных опросов."""
+    p = Path("credentials.json")
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[!] Ошибка credentials.json: {e}")
+        return []
+
+
+def cred_match(cred, ip, vendor=""):
+    """Проверяет подходит ли учётка к IP/вендору."""
+    nets = cred.get("networks", [])
+    if nets:
+        ok = False
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            for n in nets:
+                try:
+                    if ip_obj in ipaddress.ip_network(n, strict=False):
+                        ok = True
+                        break
+                except ValueError:
+                    if n == ip:
+                        ok = True
+                        break
+        except ValueError:
+            pass
+        if not ok:
+            return False
+    vend = cred.get("vendor", "")
+    if vend and vend.lower() not in vendor.lower():
+        return False
+    return True
+
+
+def ssh_run(ip, user, password, commands, port=22, timeout=5):
+    """Выполняет команды по SSH, возвращает {cmd: output}."""
+    if not SSH_AVAILABLE:
+        return {}
+    out = {}
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            ip, port=port, username=user, password=password,
+            timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+            allow_agent=False, look_for_keys=False,
+        )
+        for cmd in commands:
+            try:
+                _stdin, stdout, _stderr = client.exec_command(cmd, timeout=timeout)
+                out[cmd] = stdout.read().decode("utf-8", errors="replace")
+            except Exception as e:
+                out[cmd] = f"[err: {e}]"
+        client.close()
+    except Exception:
+        return {}
+    return out
+
+
+def telnet_run(ip, user, password, commands, port=23, timeout=5, prompt=br"[#$>]\s*$"):
+    """Выполняет команды по Telnet — просто и грубо."""
+    if not TELNET_AVAILABLE:
+        return {}
+    out = {}
+    try:
+        tn = telnetlib.Telnet(ip, port, timeout)
+        # Login
+        tn.read_until(b"login:", timeout)
+        tn.write(user.encode() + b"\n")
+        tn.read_until(b"assword:", timeout)
+        tn.write(password.encode() + b"\n")
+        tn.read_until(b"\n", timeout)
+        time.sleep(0.5)
+        tn.read_very_eager()
+        for cmd in commands:
+            tn.write(cmd.encode() + b"\n")
+            time.sleep(1.0)
+            data = tn.read_very_eager()
+            out[cmd] = data.decode("utf-8", errors="replace")
+        try:
+            tn.write(b"exit\n")
+        except Exception:
+            pass
+        tn.close()
+    except Exception:
+        return {}
+    return out
+
+
+def http_get(url, user="", password="", timeout=6, verify_ssl=False):
+    """HTTP GET с Basic Auth, возвращает text или None."""
+    try:
+        req = urllib.request.Request(url)
+        if user:
+            token = base64.b64encode(f"{user}:{password}".encode()).decode()
+            req.add_header("Authorization", f"Basic {token}")
+        ctx = None
+        if url.startswith("https"):
+            ctx = ssl.create_default_context()
+            if not verify_ssl:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            return r.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+# === Парсеры для разных вендоров ===
+
+def parse_mikrotik_ssh(outputs):
+    """Парсит вывод MikroTik команд."""
+    info = {}
+    # /system resource print
+    res = outputs.get("/system resource print", "") or outputs.get("system resource print", "")
+    if res:
+        m = re.search(r"cpu-load:\s*(\d+)", res)
+        if m: info["cpu_load"] = int(m.group(1))
+        m = re.search(r"free-memory:\s*([\d.]+)([KMG]?i?B)", res)
+        m2 = re.search(r"total-memory:\s*([\d.]+)([KMG]?i?B)", res)
+        def to_kb(v, u):
+            v = float(v)
+            return int(v * (1 if "K" in u else 1024 if "M" in u else 1024*1024 if "G" in u else 1/1024))
+        if m and m2:
+            info["mem_total"] = to_kb(m2.group(1), m2.group(2))
+            info["mem_used"] = info["mem_total"] - to_kb(m.group(1), m.group(2))
+        m = re.search(r"uptime:\s*(\S+)", res)
+        if m: info["uptime"] = m.group(1)
+        m = re.search(r"version:\s*(\S+)", res)
+        if m: info["sys_descr"] = f"MikroTik RouterOS {m.group(1)}"
+    # /interface print stats
+    iflist = []
+    iface_out = outputs.get("/interface print stats without-paging", "") or outputs.get("/interface print", "")
+    if iface_out:
+        for line in iface_out.split("\n"):
+            m = re.match(r"\s*(\d+)\s+([RXASD]+)?\s*([\w-]+)\s+(\S+)\s+(\d+)\s+(\d+)", line)
+            if m:
+                iflist.append({
+                    "if_index": int(m.group(1)) + 1,
+                    "if_name": m.group(3),
+                    "oper_status": "up" if "R" in (m.group(2) or "") else "down",
+                    "in_octets": int(m.group(5)),
+                    "out_octets": int(m.group(6)),
+                    "speed_mbps": 1000,
+                })
+    return info, iflist
+
+
+def parse_cisco_eltex_ssh(outputs):
+    """Eltex/Cisco show running/show interfaces."""
+    info = {}
+    ver = outputs.get("show version", "")
+    if ver:
+        info["sys_descr"] = ver.split("\n")[0][:200]
+        m = re.search(r"uptime is (.+)", ver)
+        if m: info["uptime"] = m.group(1).strip()
+    cpu = outputs.get("show processes cpu", "") or outputs.get("show cpu", "")
+    if cpu:
+        m = re.search(r"(\d+)%", cpu)
+        if m: info["cpu_load"] = int(m.group(1))
+    return info, []
+
+
+def collect_via_ssh(ip, vendor, sys_descr, creds, timeout):
+    """Подбирает учётку и команды по вендору, возвращает (info, ifaces)."""
+    if not SSH_AVAILABLE:
+        return {}, []
+    s = (vendor + " " + sys_descr).lower()
+    if "mikrotik" in s or "routeros" in s:
+        cmds = ["/system resource print", "/system identity print", "/interface print stats without-paging"]
+        parser = parse_mikrotik_ssh
+    elif "eltex" in s or "cisco" in s or "huawei" in s:
+        cmds = ["show version", "show processes cpu", "show interfaces"]
+        parser = parse_cisco_eltex_ssh
+    else:
+        cmds = ["uname -a", "uptime", "cat /proc/loadavg"]
+        parser = lambda o: ({"sys_descr": o.get("uname -a", "").strip()[:200]}, [])
+    for cred in creds:
+        if not cred_match(cred, ip, vendor):
+            continue
+        if cred.get("type") and cred["type"] not in ("ssh", "any"):
+            continue
+        port = cred.get("ssh_port", 22)
+        out = ssh_run(ip, cred["user"], cred["password"], cmds, port=port, timeout=timeout)
+        if out:
+            print(f"  [SSH] {ip} OK ({cred['user']})")
+            return parser(out)
+    return {}, []
+
+
+def collect_via_telnet(ip, vendor, sys_descr, creds, timeout):
+    if not TELNET_AVAILABLE:
+        return {}, []
+    s = (vendor + " " + sys_descr).lower()
+    if "huawei" in s:
+        cmds = ["display version", "display cpu-usage", "display memory-usage"]
+    elif "eltex" in s or "zte" in s:
+        cmds = ["show version", "show interfaces"]
+    else:
+        cmds = ["show version"]
+    for cred in creds:
+        if not cred_match(cred, ip, vendor):
+            continue
+        if cred.get("type") and cred["type"] not in ("telnet", "any"):
+            continue
+        port = cred.get("telnet_port", 23)
+        out = telnet_run(ip, cred["user"], cred["password"], cmds, port=port, timeout=timeout)
+        if out:
+            print(f"  [Telnet] {ip} OK ({cred['user']})")
+            info = {"sys_descr": (out.get(cmds[0], "") or "")[:200].strip()}
+            return info, []
+    return {}, []
+
+
+def collect_via_http_api(ip, vendor, creds, timeout):
+    """REST API: MikroTik (https://ip/rest), Ubiquiti UNMS, generic."""
+    s = vendor.lower()
+    for cred in creds:
+        if not cred_match(cred, ip, vendor):
+            continue
+        if cred.get("type") and cred["type"] not in ("http", "https", "api", "any"):
+            continue
+        # MikroTik REST API
+        if "mikrotik" in s or cred.get("vendor", "").lower() == "mikrotik":
+            for scheme in ("https", "http"):
+                txt = http_get(f"{scheme}://{ip}/rest/system/resource", cred["user"], cred["password"], timeout)
+                if txt and txt.startswith("{"):
+                    try:
+                        data = json.loads(txt)
+                        info = {
+                            "cpu_load": int(data.get("cpu-load", 0)),
+                            "uptime": data.get("uptime", ""),
+                            "sys_descr": f"MikroTik {data.get('board-name','')} {data.get('version','')}",
+                        }
+                        ifaces_txt = http_get(f"{scheme}://{ip}/rest/interface", cred["user"], cred["password"], timeout)
+                        ifaces = []
+                        if ifaces_txt:
+                            try:
+                                arr = json.loads(ifaces_txt)
+                                for i, it in enumerate(arr if isinstance(arr, list) else []):
+                                    ifaces.append({
+                                        "if_index": i + 1,
+                                        "if_name": it.get("name", ""),
+                                        "oper_status": "up" if it.get("running") == "true" else "down",
+                                        "in_octets": int(it.get("rx-byte", 0) or 0),
+                                        "out_octets": int(it.get("tx-byte", 0) or 0),
+                                        "speed_mbps": 1000,
+                                    })
+                            except Exception:
+                                pass
+                        print(f"  [HTTP-API] {ip} MikroTik OK ({cred['user']})")
+                        return info, ifaces
+                    except Exception:
+                        pass
+        # Generic JSON endpoint
+        url = cred.get("api_url", "")
+        if url:
+            txt = http_get(url.replace("{ip}", ip), cred["user"], cred["password"], timeout)
+            if txt:
+                print(f"  [HTTP-API] {ip} OK")
+                return {"sys_descr": txt[:200]}, []
+    return {}, []
+
+
 def snmp_cpu_mem(ip, community):
     """CPU и память — пробуем универсальные OID + специфичные."""
     cpu = 0
@@ -609,6 +906,13 @@ def discover(cfg):
     snmp_lldp_on = cfg.get("snmp_lldp", "true").lower() == "true"
     do_deep = cfg.get("deep_ping", "true").lower() == "true"
     community = cfg.get("snmp_community", "public")
+    ssh_on = cfg.get("ssh_enabled", "true").lower() == "true"
+    ssh_to = int(cfg.get("ssh_timeout", "5"))
+    telnet_on = cfg.get("telnet_enabled", "true").lower() == "true"
+    telnet_to = int(cfg.get("telnet_timeout", "5"))
+    http_on = cfg.get("http_api_enabled", "true").lower() == "true"
+    http_to = int(cfg.get("http_api_timeout", "6"))
+    creds = load_credentials()
 
     alive_ips = scan_subnets(subnets, threads, ping_timeout)
     arp = get_arp_table()
@@ -638,6 +942,35 @@ def discover(cfg):
                 if detect_is_olt(sys_descr, vendor_from_mac(mac)):
                     is_olt = True
                     onus = snmp_olt_onus(ip, community)
+
+        # Fallback: если SNMP не дал инфы — пробуем активные методы
+        if creds and not sys_descr:
+            if http_on:
+                ainfo, aifaces = collect_via_http_api(ip, vendor, creds, http_to)
+                if ainfo:
+                    sys_descr = ainfo.get("sys_descr", sys_descr)
+                    cpu = ainfo.get("cpu_load", cpu)
+                    mem_used = ainfo.get("mem_used", mem_used)
+                    mem_total = ainfo.get("mem_total", mem_total)
+                    uptime = ainfo.get("uptime", uptime)
+                    if aifaces:
+                        ifaces = aifaces
+            if ssh_on and not sys_descr:
+                ainfo, aifaces = collect_via_ssh(ip, vendor, sys_descr, creds, ssh_to)
+                if ainfo:
+                    sys_descr = ainfo.get("sys_descr", sys_descr)
+                    cpu = ainfo.get("cpu_load", cpu)
+                    mem_used = ainfo.get("mem_used", mem_used)
+                    mem_total = ainfo.get("mem_total", mem_total)
+                    uptime = ainfo.get("uptime", uptime)
+                    if aifaces:
+                        ifaces = aifaces
+            if telnet_on and not sys_descr:
+                ainfo, aifaces = collect_via_telnet(ip, vendor, sys_descr, creds, telnet_to)
+                if ainfo:
+                    sys_descr = ainfo.get("sys_descr", sys_descr)
+                    if aifaces:
+                        ifaces = aifaces
         loss, rtt = (0, 0)
         if do_deep:
             loss, rtt = deep_ping(ip, count=3, timeout_ms=int(ping_timeout))
@@ -800,16 +1133,74 @@ deep_ping       — серия из 3 ping для измерения потер�
 Для Huawei: lldp enable (глобально)
 
 
+АКТИВНЫЕ ПОДКЛЮЧЕНИЯ ПО ЛОГИНУ/ПАРОЛЮ (SSH/Telnet/HTTP API)
+============================================================
+Если устройство НЕ отдаёт SNMP — агент попробует подключиться по логину/паролю.
+Поддержка: MikroTik (SSH/REST API), Eltex/Cisco (SSH), Huawei (Telnet),
+Linux (SSH), любой другой — generic команды.
+
+Шаги:
+1) Скопируй credentials.example.json в credentials.json
+2) Открой в Блокноте, впиши свои логины/пароли:
+   - vendor: "mikrotik" / "eltex" / "cisco" / "huawei" / "linux" / ""
+   - type:   "ssh" / "telnet" / "http" / "any"
+   - networks: список подсетей где использовать эти учётки
+   - user / password: как обычно
+
+Например, чтобы агент логинился на все MikroTik с логином monitor:
+[
+  {
+    "vendor": "mikrotik", "type": "any",
+    "user": "monitor", "password": "MyPass123",
+    "networks": ["192.168.0.0/16"]
+  }
+]
+
+ВАЖНО: credentials.json хранится локально на твоём ПК с агентом.
+Логины/пароли НИКУДА не отправляются — на сайт уходит только результат опроса.
+
+
 СБОРКА В EXE (без Python)
 =========================
 build_exe.bat -> готовый dist\\scanner.exe
 """
 
+CREDENTIALS_EXAMPLE = """[
+  {
+    "name": "MikroTik routers",
+    "vendor": "mikrotik",
+    "type": "any",
+    "user": "monitor",
+    "password": "ВСТАВЬ_ПАРОЛЬ",
+    "networks": ["192.168.88.0/24"],
+    "ssh_port": 22,
+    "telnet_port": 23
+  },
+  {
+    "name": "Eltex switches via SSH",
+    "vendor": "eltex",
+    "type": "ssh",
+    "user": "admin",
+    "password": "admin",
+    "networks": ["10.0.0.0/24"]
+  },
+  {
+    "name": "Huawei OLT via Telnet",
+    "vendor": "huawei",
+    "type": "telnet",
+    "user": "root",
+    "password": "ВСТАВЬ_ПАРОЛЬ",
+    "networks": ["10.10.0.0/16"]
+  }
+]
+"""
+
 AGENT_FILES = {
     "scanner.py": SCANNER_PY,
-    "requirements.txt": "pysnmp==4.4.12\n",
+    "requirements.txt": "pysnmp==4.4.12\nparamiko==3.4.0\n",
     "run.bat": '@echo off\r\ncd /d "%~dp0"\r\npython scanner.py\r\npause\r\n',
     "install_deps.bat": '@echo off\r\necho Installing Python dependencies...\r\npip install -r requirements.txt\r\npause\r\n',
-    "build_exe.bat": '@echo off\r\npip install pyinstaller pysnmp==4.4.12\r\npyinstaller --onefile --name scanner scanner.py\r\necho Done: dist\\scanner.exe\r\npause\r\n',
+    "build_exe.bat": '@echo off\r\npip install pyinstaller pysnmp==4.4.12 paramiko==3.4.0\r\npyinstaller --onefile --name scanner scanner.py\r\necho Done: dist\\scanner.exe\r\npause\r\n',
+    "credentials.example.json": CREDENTIALS_EXAMPLE,
     "README.txt": README_TXT,
 }

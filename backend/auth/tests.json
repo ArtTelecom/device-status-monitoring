@@ -1,0 +1,21 @@
+{
+  "tests": [
+    {"name": "OPTIONS", "method": "OPTIONS", "path": "/", "expectedStatus": 200},
+    {
+      "name": "Login as admin",
+      "method": "POST",
+      "path": "/?action=login",
+      "body": {"email": "admin@local", "password": "admin123"},
+      "expectedStatus": 200,
+      "expectedBody": {"success": true},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Login wrong",
+      "method": "POST",
+      "path": "/?action=login",
+      "body": {"email": "admin@local", "password": "wrong"},
+      "expectedStatus": 401
+    }
+  ]
+}

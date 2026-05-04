@@ -1,4 +1,6 @@
 {
+  "admin-users": "https://functions.poehali.dev/21e3740f-8c6d-490e-b169-0b548d5e9ec6",
+  "auth": "https://functions.poehali.dev/86948a87-bbd9-4f47-8cca-6d53e86724ef",
   "topology-autobuild": "https://functions.poehali.dev/7a43803f-93f5-4e5e-9047-f39101e88322",
   "link-traffic": "https://functions.poehali.dev/1687d84b-471e-4ed5-8f23-1ee841698a9c",
   "map-links": "https://functions.poehali.dev/5d8489ec-523b-4377-9fc9-376a1506440d",

@@ -1,11 +1,12 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import Icon from "@/components/ui/icon";
+import { useAuth } from "@/contexts/AuthContext";
 
 const NAV_GROUPS = [
   {
     title: "Мониторинг",
     items: [
-      { to: "/", label: "Дашборд", icon: "LayoutDashboard", end: true },
+      { to: "/dashboard", label: "Дашборд", icon: "LayoutDashboard", end: true },
       { to: "/map", label: "Карта сети", icon: "Map" },
       { to: "/events", label: "События", icon: "Bell", badge: 4 },
       { to: "/analytics", label: "Аналитика", icon: "BarChart3" },
@@ -40,7 +41,24 @@ const NAV_GROUPS = [
   },
 ];
 
+const ADMIN_ITEM = { to: "/admin", label: "Админ-панель", icon: "ShieldCheck" };
+
 export default function Sidebar() {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    nav("/");
+  };
+
+  const initials = (user?.name || user?.email || "??")
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase() || "")
+    .join("");
+
   return (
     <aside className="w-60 shrink-0 border-r border-border bg-sidebar h-screen sticky top-0 flex flex-col">
       <div className="px-4 h-14 flex items-center gap-2 border-b border-sidebar-border">
@@ -75,19 +93,31 @@ export default function Sidebar() {
                   )}
                 </NavLink>
               ))}
+              {group.title === "Администрирование" && user?.role === "admin" && (
+                <NavLink
+                  to={ADMIN_ITEM.to}
+                  className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
+                >
+                  <Icon name={ADMIN_ITEM.icon} size={16} />
+                  <span className="flex-1">{ADMIN_ITEM.label}</span>
+                  <span className="text-[10px] font-mono-data px-1.5 py-0.5 rounded bg-primary/15 text-primary">
+                    admin
+                  </span>
+                </NavLink>
+              )}
             </div>
           </div>
         ))}
       </nav>
       <div className="border-t border-sidebar-border p-3 flex items-center gap-2">
         <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-semibold">
-          АА
+          {initials}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-xs font-medium truncate">Администратор</div>
-          <div className="text-[10px] text-muted-foreground truncate">admin@isp.ru</div>
+          <div className="text-xs font-medium truncate">{user?.name || "—"}</div>
+          <div className="text-[10px] text-muted-foreground truncate">{user?.email}</div>
         </div>
-        <button className="text-muted-foreground hover:text-foreground">
+        <button onClick={handleLogout} className="text-muted-foreground hover:text-foreground" title="Выйти">
           <Icon name="LogOut" size={14} />
         </button>
       </div>
