@@ -5,7 +5,7 @@ SCANNER_PY = r'''"""Windows-агент для сканирования лока�
 + Heartbeat, выполнение команд из админки, самообновление.
 """
 
-AGENT_VERSION = 1
+AGENT_VERSION = 2
 CONTROL_URL = "https://functions.poehali.dev/cfa102a8-741d-4190-b2da-e58a2ed0e3b3"
 
 import base64
@@ -674,6 +674,173 @@ def parse_mikrotik_ssh(outputs):
     return info, iflist
 
 
+def tcp_port_open(ip, port, timeout=1.5):
+    """Проверка TCP-порта."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        r = s.connect_ex((ip, port))
+        s.close()
+        return r == 0
+    except Exception:
+        return False
+
+
+def http_banner(ip, timeout=3):
+    """Достаёт title/server из HTTP/HTTPS — часто видно вендора OLT."""
+    for scheme in ("http", "https"):
+        for path in ("/", "/login.html", "/cgi-bin/luci"):
+            try:
+                ctx = None
+                if scheme == "https":
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(f"{scheme}://{ip}{path}", timeout=timeout, context=ctx) as r:
+                    headers = dict(r.headers)
+                    body = r.read(4096).decode("utf-8", errors="replace")
+                    title = ""
+                    m = re.search(r"<title[^>]*>([^<]+)</title>", body, re.I)
+                    if m: title = m.group(1).strip()
+                    return {"server": headers.get("Server", ""), "title": title, "body": body[:1500]}
+            except Exception:
+                continue
+    return None
+
+
+# === C-Data OLT парсер ===
+CDATA_DEFAULT_USERS = [
+    ("admin", "admin"),
+    ("admin", "epon@admin"),
+    ("admin", "Xpon@Admin#"),
+    ("root", "admin"),
+    ("guest", "guest"),
+]
+
+
+def parse_cdata_olt(outputs):
+    """Парсит вывод C-Data OLT команд."""
+    info = {"vendor": "C-Data", "is_olt": True, "sys_descr": "C-Data GPON/EPON OLT"}
+    onus = []
+    ver = outputs.get("show version", "") or outputs.get("show system", "")
+    if ver:
+        info["sys_descr"] = ("C-Data " + ver.split("\n")[0])[:200].strip()
+        m = re.search(r"uptime[:\s]+(.+)", ver, re.I)
+        if m: info["uptime"] = m.group(1).strip()
+        m = re.search(r"hardware[:\s]+(.+)", ver, re.I)
+        if m: info["model"] = m.group(1).strip()
+    cpu = outputs.get("show cpu", "") or outputs.get("show cpu utilization", "")
+    if cpu:
+        m = re.search(r"(\d+)\s*%", cpu)
+        if m: info["cpu_load"] = int(m.group(1))
+    mem = outputs.get("show memory", "")
+    if mem:
+        m = re.search(r"(\d+)\s*%", mem)
+        if m: info["mem_load"] = int(m.group(1))
+    # ONU список: show onu-information / show gpon onu state / show onu all
+    onu_text = ""
+    for k in ("show gpon onu state all", "show onu-information all", "show onu all", "show pon onu all"):
+        if outputs.get(k):
+            onu_text = outputs[k]; break
+    if onu_text:
+        for line in onu_text.split("\n"):
+            # Типичные форматы: "1/1/1:1  ONU-1234567890ab  online  -25.5/-3.2"
+            m = re.match(
+                r"\s*(\d+)[/:](\d+)[/:](\d+)[/:.](\d+)\s+([\w-]+)\s+(\S+)(?:\s+([-\d.]+)/([-\d.]+))?",
+                line)
+            if m:
+                onus.append({
+                    "frame": int(m.group(1)), "slot": int(m.group(2)),
+                    "port": int(m.group(3)), "onu_id": int(m.group(4)),
+                    "serial": m.group(5),
+                    "status": m.group(6).lower(),
+                    "rx_dbm": float(m.group(7)) if m.group(7) else None,
+                    "tx_dbm": float(m.group(8)) if m.group(8) else None,
+                })
+    return info, [], onus
+
+
+def collect_cdata_via_telnet(ip, creds_extra, timeout=8):
+    """Активный опрос C-Data по Telnet — пробует все учётки."""
+    if not TELNET_AVAILABLE:
+        return {}, [], []
+    cmds = [
+        "enable",
+        "terminal length 0",
+        "show version",
+        "show cpu",
+        "show memory",
+        "show gpon onu state all",
+        "show onu all",
+    ]
+    # Сначала из credentials.json (cred_match), потом дефолтные
+    candidates = list(creds_extra) + [
+        {"user": u, "password": p, "type": "telnet"} for u, p in CDATA_DEFAULT_USERS
+    ]
+    for cred in candidates:
+        try:
+            tn = telnetlib.Telnet(ip, 23, timeout)
+            tn.read_until(b"sername:", timeout)
+            tn.write(cred["user"].encode() + b"\n")
+            tn.read_until(b"assword:", timeout)
+            tn.write(cred["password"].encode() + b"\n")
+            time.sleep(1.0)
+            data = tn.read_very_eager().decode("utf-8", errors="replace")
+            if "incorrect" in data.lower() or "fail" in data.lower() or "denied" in data.lower():
+                tn.close(); continue
+            outputs = {}
+            for cmd in cmds:
+                tn.write(cmd.encode() + b"\n")
+                time.sleep(1.5)
+                # Несколько итераций — иногда вывод длинный
+                buf = b""
+                for _ in range(5):
+                    try:
+                        chunk = tn.read_very_eager()
+                        if not chunk:
+                            time.sleep(0.4)
+                            continue
+                        buf += chunk
+                    except Exception:
+                        break
+                outputs[cmd] = buf.decode("utf-8", errors="replace")
+            try: tn.write(b"exit\n"); tn.close()
+            except Exception: pass
+            print(f"  [C-Data Telnet] {ip} OK ({cred['user']}/{cred['password']})")
+            return parse_cdata_olt(outputs)
+        except Exception:
+            continue
+    return {}, [], []
+
+
+def collect_cdata_via_ssh(ip, creds_extra, timeout=8):
+    """Активный опрос C-Data по SSH."""
+    if not SSH_AVAILABLE:
+        return {}, [], []
+    cmds = ["show version", "show cpu", "show memory", "show gpon onu state all", "show onu all"]
+    candidates = list(creds_extra) + [
+        {"user": u, "password": p, "type": "ssh"} for u, p in CDATA_DEFAULT_USERS
+    ]
+    for cred in candidates:
+        out = ssh_run(ip, cred["user"], cred["password"], cmds, port=22, timeout=timeout)
+        if out and any(out.values()):
+            joined = " ".join(out.values()).lower()
+            if "c-data" in joined or "gpon" in joined or "onu" in joined or "epon" in joined:
+                print(f"  [C-Data SSH] {ip} OK ({cred['user']})")
+                return parse_cdata_olt(out)
+    return {}, [], []
+
+
+def is_likely_cdata_olt(ip, http_info=None):
+    """Эвристика: похоже ли устройство на C-Data OLT."""
+    if http_info:
+        text = (http_info.get("title", "") + " " + http_info.get("server", "") + " " + http_info.get("body", "")).lower()
+        if "c-data" in text or "cdata" in text or "gpon olt" in text or "epon olt" in text:
+            return True
+    # Открыт telnet + не открыт SMB/RDP — высокая вероятность сетевая железка
+    return tcp_port_open(ip, 23, 1.0)
+
+
 def parse_cisco_eltex_ssh(outputs):
     """Eltex/Cisco show running/show interfaces."""
     info = {}
@@ -947,6 +1114,30 @@ def discover(cfg):
                 if detect_is_olt(sys_descr, vendor_from_mac(mac)):
                     is_olt = True
                     onus = snmp_olt_onus(ip, community)
+
+        # === C-Data OLT: активный опрос Telnet/SSH с дефолтными учётками ===
+        # Запускается даже без credentials.json — пробует "admin/admin" и др.
+        if not is_olt:
+            hb = None
+            if http_on:
+                hb = http_banner(ip, timeout=3)
+            cdata_creds = [c for c in creds if "c-data" in (c.get("vendor", "").lower()) or "cdata" in (c.get("vendor", "").lower())]
+            try_cdata = bool(cdata_creds) or is_likely_cdata_olt(ip, hb)
+            if try_cdata:
+                print(f"[*] {ip}: пробуем как C-Data OLT...")
+                ainfo, aif, aonus = ({}, [], [])
+                if telnet_on:
+                    ainfo, aif, aonus = collect_cdata_via_telnet(ip, cdata_creds, telnet_to + 3)
+                if not ainfo and ssh_on:
+                    ainfo, aif, aonus = collect_cdata_via_ssh(ip, cdata_creds, ssh_to + 3)
+                if ainfo:
+                    sys_descr = ainfo.get("sys_descr", "C-Data OLT")
+                    vendor = "C-Data"
+                    is_olt = True
+                    if "cpu_load" in ainfo: cpu = ainfo["cpu_load"]
+                    if "uptime" in ainfo: uptime = ainfo["uptime"]
+                    if aonus:
+                        onus = aonus
 
         # Fallback: если SNMP не дал инфы — пробуем активные методы
         if creds and not sys_descr:
@@ -1346,6 +1537,15 @@ build_exe.bat -> готовый dist\\scanner.exe
 """
 
 CREDENTIALS_EXAMPLE = """[
+  {
+    "name": "C-Data OLT",
+    "vendor": "c-data",
+    "type": "telnet",
+    "user": "admin",
+    "password": "admin",
+    "networks": ["10.255.230.0/24"],
+    "telnet_port": 23
+  },
   {
     "name": "MikroTik routers",
     "vendor": "mikrotik",
