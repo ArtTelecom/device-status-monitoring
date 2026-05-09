@@ -5,7 +5,7 @@ SCANNER_PY = r'''"""Windows-агент для сканирования лока�
 + Heartbeat, выполнение команд из админки, самообновление.
 """
 
-AGENT_VERSION = 6
+AGENT_VERSION = 7
 CONTROL_URL = "https://functions.poehali.dev/cfa102a8-741d-4190-b2da-e58a2ed0e3b3"
 
 import base64
@@ -1586,6 +1586,72 @@ def execute_command(cfg, cmd_id, command, payload_str):
             return out[:1500]
         except Exception as e:
             return f"err: {e}"
+    if command == "add_subnet":
+        new_sn = str(payload.get("subnet", "")).strip()
+        if not new_sn:
+            return "empty subnet"
+        try:
+            ipaddress.ip_network(new_sn, strict=False)
+        except Exception as e:
+            return f"bad subnet: {e}"
+        cur_val = cfg.get("subnet", "")
+        items = [s.strip() for s in re.split(r"[,;\n]+", cur_val) if s.strip()]
+        if new_sn not in items:
+            items.append(new_sn)
+        joined = ",".join(items)
+        update_config_value(CONFIG_FILE, "agent", "subnet", joined)
+        return f"subnet => {joined}"
+    if command == "snmp_poll":
+        ip = str(payload.get("ip", "")).strip()
+        community = str(payload.get("community", cfg.get("snmp_community", "public"))).strip() or "public"
+        if not ip:
+            return "empty ip"
+        try:
+            ipaddress.ip_address(ip)
+        except Exception:
+            return f"bad ip: {ip}"
+        if not SNMP_AVAILABLE:
+            return "snmp library unavailable on agent"
+        try:
+            descr, name, uptime, contact, location = snmp_probe(ip, community)
+        except Exception as e:
+            return f"snmp err: {e}"
+        if not descr and not name:
+            return f"no snmp answer from {ip} (community '{community}')"
+        # Эвристика производителя/модели
+        text = (descr + " " + name).lower()
+        vendor = ""
+        if "mikrotik" in text or "routeros" in text:
+            vendor = "MikroTik"
+        elif "c-data" in text or "cdata" in text:
+            vendor = "C-Data"
+        elif "huawei" in text:
+            vendor = "Huawei"
+        elif "zte" in text:
+            vendor = "ZTE"
+        elif "cisco" in text:
+            vendor = "Cisco"
+        is_olt = any(k in text for k in ("olt", "gpon", "epon"))
+        # Пинг для статуса
+        try:
+            rtt_ok = ping(ip, 1500)
+        except Exception:
+            rtt_ok = False
+        device = {
+            "ip": ip, "mac": "", "hostname": name or "",
+            "vendor": vendor, "model": vendor + (" OLT" if is_olt and vendor else ""),
+            "sys_descr": descr or "", "uptime": uptime or "",
+            "status": "online" if rtt_ok else "warning",
+            "contact": contact or "", "location": location or "",
+            "cpu_load": 0, "mem_used": 0, "mem_total": 0,
+            "ping_loss": 0 if rtt_ok else 100, "ping_rtt_ms": 0,
+            "interfaces": [], "neighbors": [], "is_olt": is_olt, "onus": [],
+        }
+        try:
+            push(cfg, [device])
+        except Exception as e:
+            return f"push err: {e}"
+        return f"polled {ip}: {vendor or 'unknown'} | {(name or descr or '')[:80]}"
     return f"unknown command: {command}"
 
 

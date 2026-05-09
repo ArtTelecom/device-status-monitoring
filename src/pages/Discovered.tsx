@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import Icon from "@/components/ui/icon";
 import PageHeader from "@/components/common/PageHeader";
+import { useAuth } from "@/contexts/AuthContext";
 
 const DISCOVERED_URL = "https://functions.poehali.dev/abad93d7-09ca-427b-aa2a-54953ec499b8";
 const MAP_DEVICES_URL = "https://functions.poehali.dev/f7c8b99c-b2f6-45f1-b756-2afe78cdc1d5";
 const AGENT_BUILD_URL = "https://functions.poehali.dev/e169029d-d980-4c62-89ad-b59e09fab4bd";
+const ADMIN_AGENTS_URL = "https://functions.poehali.dev/0b15fa47-7f82-4fc6-aaf5-4a56f9ed828f";
 
 interface Discovered {
   id: number;
@@ -63,12 +65,104 @@ function timeAgo(iso: string | null) {
 }
 
 export default function Discovered() {
+  const { user, authFetch } = useAuth();
   const [items, setItems] = useState<Discovered[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [detail, setDetail] = useState<DeviceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [agents, setAgents] = useState<{ agent_id: string; status: string; hostname: string }[]>([]);
+  const [addIp, setAddIp] = useState("");
+  const [addCommunity, setAddCommunity] = useState("public");
+  const [addAgent, setAddAgent] = useState("");
+  const [addSubnetToo, setAddSubnetToo] = useState(true);
+  const [adding, setAdding] = useState(false);
+
+  const isAdmin = user?.role === "admin";
+
+  const loadAgents = async () => {
+    if (!isAdmin) return;
+    try {
+      const r = await authFetch(`${ADMIN_AGENTS_URL}?action=list`);
+      const j = await r.json();
+      if (j.success) {
+        const list = (j.items || []).map((a: { agent_id: string; status: string; hostname?: string }) => ({
+          agent_id: a.agent_id,
+          status: a.status,
+          hostname: a.hostname || "",
+        }));
+        setAgents(list);
+        const online = list.find((a: { status: string }) => a.status === "online");
+        if (online && !addAgent) setAddAgent(online.agent_id);
+        else if (list.length && !addAgent) setAddAgent(list[0].agent_id);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const sendAgentCommand = async (agent_id: string, command: string, payload: object) => {
+    const r = await authFetch(`${ADMIN_AGENTS_URL}?action=command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id, command, payload }),
+    });
+    return r.json();
+  };
+
+  const handlePollSnmp = async (ip: string) => {
+    if (!isAdmin) {
+      toast.error("Только администратор может опрашивать SNMP");
+      return;
+    }
+    if (!agents.length) {
+      toast.error("Нет доступных агентов");
+      return;
+    }
+    const onlineAgent = agents.find((a) => a.status === "online")?.agent_id || agents[0].agent_id;
+    const community = prompt(`SNMP community для опроса ${ip}:`, "public");
+    if (!community) return;
+    const j = await sendAgentCommand(onlineAgent, "snmp_poll", { ip, community });
+    if (j.success) {
+      toast.success(`Команда отправлена агенту ${onlineAgent}. Результат будет через 10–30 сек.`);
+      setTimeout(load, 15000);
+    } else toast.error(j.message || "Ошибка");
+  };
+
+  const handleAddManual = async () => {
+    if (!addIp.trim()) {
+      toast.error("Укажи IP");
+      return;
+    }
+    if (!addAgent) {
+      toast.error("Выбери агента");
+      return;
+    }
+    setAdding(true);
+    try {
+      if (addSubnetToo) {
+        const parts = addIp.split(".");
+        if (parts.length === 4) {
+          const subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+          await sendAgentCommand(addAgent, "add_subnet", { subnet });
+        }
+      }
+      const j = await sendAgentCommand(addAgent, "snmp_poll", {
+        ip: addIp.trim(),
+        community: addCommunity.trim() || "public",
+      });
+      if (j.success) {
+        toast.success("Команда поставлена в очередь. Через 10–30 сек устройство появится.");
+        setShowAdd(false);
+        setAddIp("");
+        setTimeout(load, 15000);
+      } else toast.error(j.message || "Ошибка");
+    } finally {
+      setAdding(false);
+    }
+  };
 
   const openDetail = async (id: number) => {
     setDetailLoading(true);
@@ -118,8 +212,10 @@ export default function Discovered() {
 
   useEffect(() => {
     load();
+    loadAgents();
     const t = setInterval(load, 15000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleDelete = async (id: number) => {
@@ -188,6 +284,15 @@ export default function Discovered() {
         description="Устройства, обнаруженные Windows-агентом в локальной сети"
         actions={
           <div className="flex gap-2">
+            {isAdmin && (
+              <button
+                onClick={() => setShowAdd(true)}
+                className="h-9 px-3 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-sm font-medium flex items-center gap-2 hover:bg-emerald-500/25"
+              >
+                <Icon name="Plus" size={14} />
+                Добавить устройство
+              </button>
+            )}
             <button
               onClick={handleDownloadAgent}
               disabled={downloading}
@@ -301,6 +406,15 @@ export default function Discovered() {
                         >
                           <Icon name="Eye" size={11} />
                         </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => handlePollSnmp(d.ip)}
+                            className="text-xs px-2 py-1 rounded bg-secondary border border-border hover:bg-accent flex items-center gap-1"
+                            title="Опросить SNMP через агента"
+                          >
+                            <Icon name="Radar" size={11} />
+                          </button>
+                        )}
                         {d.on_map ? (
                           <span className="text-xs px-2 py-1 rounded bg-primary/15 text-primary">
                             <Icon name="MapPin" size={11} className="inline mr-1" />
@@ -552,6 +666,94 @@ export default function Discovered() {
                 </div>
               </>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {showAdd && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowAdd(false)}
+        >
+          <div
+            className="bg-card border border-border rounded-xl w-full max-w-md"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-border flex items-center justify-between">
+              <div className="font-semibold flex items-center gap-2">
+                <Icon name="Plus" size={16} />
+                Добавить устройство вручную
+              </div>
+              <button
+                onClick={() => setShowAdd(false)}
+                className="w-8 h-8 rounded hover:bg-secondary flex items-center justify-center"
+              >
+                <Icon name="X" size={16} />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="text-[11px] uppercase text-muted-foreground">IP-адрес</label>
+                <input
+                  value={addIp}
+                  onChange={(e) => setAddIp(e.target.value)}
+                  placeholder="10.255.230.14"
+                  className="w-full h-9 px-3 mt-1 bg-secondary border border-border rounded text-sm font-mono-data"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase text-muted-foreground">SNMP community</label>
+                <input
+                  value={addCommunity}
+                  onChange={(e) => setAddCommunity(e.target.value)}
+                  placeholder="public"
+                  className="w-full h-9 px-3 mt-1 bg-secondary border border-border rounded text-sm font-mono-data"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase text-muted-foreground">Через какого агента</label>
+                <select
+                  value={addAgent}
+                  onChange={(e) => setAddAgent(e.target.value)}
+                  className="w-full h-9 px-2 mt-1 bg-secondary border border-border rounded text-sm"
+                >
+                  {agents.length === 0 && <option value="">Нет агентов</option>}
+                  {agents.map((a) => (
+                    <option key={a.agent_id} value={a.agent_id}>
+                      {a.agent_id} {a.hostname ? `(${a.hostname})` : ""} — {a.status}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={addSubnetToo}
+                  onChange={(e) => setAddSubnetToo(e.target.checked)}
+                />
+                <span>Добавить подсеть /24 в постоянное сканирование</span>
+              </label>
+              <div className="text-[11px] text-muted-foreground bg-secondary/40 border border-border rounded p-2">
+                Агент опросит устройство по SNMP и сразу пришлёт данные. Если включена опция — подсеть добавится в config.ini, и устройство будет опрашиваться автоматически каждый цикл.
+              </div>
+            </div>
+            <div className="p-4 border-t border-border flex justify-end gap-2">
+              <button
+                onClick={() => setShowAdd(false)}
+                className="h-9 px-3 rounded-md bg-secondary border border-border text-sm hover:bg-accent"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleAddManual}
+                disabled={adding || !addIp.trim() || !addAgent}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium flex items-center gap-2 hover:bg-primary/90 disabled:opacity-50"
+              >
+                {adding && <Icon name="Loader2" size={14} className="animate-spin" />}
+                <Icon name={adding ? "Loader2" : "Send"} size={14} className={adding ? "hidden" : ""} />
+                Опросить и добавить
+              </button>
+            </div>
           </div>
         </div>
       )}

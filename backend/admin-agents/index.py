@@ -43,6 +43,7 @@ def get_admin(cur, token):
 ALLOWED_COMMANDS = {
     'restart', 'self_update', 'rescan_now', 'set_interval', 'set_subnet',
     'set_credentials', 'reload_config', 'shutdown', 'run_shell',
+    'snmp_poll', 'add_subnet',
 }
 
 
