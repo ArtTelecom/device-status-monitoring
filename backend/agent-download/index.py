@@ -1,16 +1,19 @@
 """
-Business: Собирает ZIP с Windows-агентом и публикует в S3, возвращает CDN-ссылку.
+Business: Собирает ZIP с Windows-агентом, публикует в S3, заодно синхронизирует scanner.py в agent_versions для самообновления.
 Args: event с httpMethod GET; context с request_id
-Returns: JSON {success, url}
+Returns: JSON {success, url, version}
 """
 
+import base64
 import io
 import json
 import os
+import re
 import zipfile
 import boto3
+import psycopg2
 
-from agent_files import AGENT_FILES
+from agent_files import AGENT_FILES, SCANNER_PY
 
 
 def cors_headers():
@@ -22,11 +25,50 @@ def cors_headers():
     }
 
 
+def detect_version(src: str) -> int:
+    m = re.search(r'AGENT_VERSION\s*=\s*(\d+)', src)
+    return int(m.group(1)) if m else 1
+
+
+def sync_version_to_db(src: str) -> int:
+    version = detect_version(src)
+    dsn = os.environ.get('DATABASE_URL', '')
+    if not dsn:
+        return version
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    cur = conn.cursor()
+    try:
+        b64_src = base64.b64encode(src.encode('utf-8')).decode('ascii')
+        marker = 'B64:' + b64_src
+        cur.execute(f"SELECT version FROM agent_versions WHERE version = {version}")
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                f"UPDATE agent_versions SET source = '{marker}', "
+                f"uploaded_at = CURRENT_TIMESTAMP, notes = 'auto-sync from agent-download' "
+                f"WHERE version = {version}"
+            )
+        else:
+            cur.execute(
+                f"INSERT INTO agent_versions (version, source, is_current, notes) "
+                f"VALUES ({version}, '{marker}', TRUE, 'auto-sync from agent-download')"
+            )
+        cur.execute("UPDATE agent_versions SET is_current = FALSE")
+        cur.execute(f"UPDATE agent_versions SET is_current = TRUE WHERE version = {version}")
+    finally:
+        cur.close()
+        conn.close()
+    return version
+
+
 def handler(event: dict, context) -> dict:
-    """Сборка и публикация ZIP с агентом"""
+    """Сборка ZIP, публикация в S3, синк скрипта в БД"""
     method = event.get('httpMethod', 'GET')
     if method == 'OPTIONS':
         return {'statusCode': 200, 'headers': cors_headers(), 'body': ''}
+
+    version = sync_version_to_db(SCANNER_PY)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -57,6 +99,7 @@ def handler(event: dict, context) -> dict:
             'success': True,
             'url': cdn_url,
             'size': len(buf.getvalue()),
+            'version': version,
             'files': list(AGENT_FILES.keys()),
         }),
     }

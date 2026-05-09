@@ -4,6 +4,7 @@ Args: event с httpMethod GET/POST, headers (X-Agent-Token), body, query
 Returns: JSON с command/version_info или OK
 """
 
+import base64
 import json
 import os
 import re
@@ -56,10 +57,16 @@ def handler(event: dict, context) -> dict:
             if not row:
                 return {'statusCode': 404, 'headers': cors_headers(),
                         'body': json.dumps({'success': False, 'message': 'Версия не загружена'})}
+            src = row[1] or ''
+            if src.startswith('B64:'):
+                try:
+                    src = base64.b64decode(src[4:].encode('ascii')).decode('utf-8')
+                except Exception:
+                    pass
             return {
                 'statusCode': 200,
                 'headers': {**cors_headers(), 'Content-Type': 'application/json'},
-                'body': json.dumps({'success': True, 'version': row[0], 'source': row[1]}),
+                'body': json.dumps({'success': True, 'version': row[0], 'source': src}),
             }
 
         # === POST heartbeat ===
